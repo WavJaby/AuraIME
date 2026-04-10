@@ -1,18 +1,19 @@
+use crate::ime::ImeStatus;
 use crate::ui::accent;
 use crate::ui::animation::{AnimationPhase, AnimationState};
-use crate::ui::layout::LayoutManager;
-use crate::ui::part::ImePart;
+use crate::ui::parts::{Container, Part, Renderable, TextPart};
 use crate::ui::renderer::UiRenderer;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use windows::core::*;
 use windows::Win32::Foundation::*;
+use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::Graphics::Dwm::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::*;
 use windows::Win32::UI::Controls::*;
+use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::Input::Ime::IME_CMODE_NATIVE;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -20,14 +21,34 @@ const WM_USER_UPDATE_POSITION: u32 = WM_USER + 1;
 const WM_USER_SHOW_AND_FADE: u32 = WM_USER + 2;
 const TIMER_ID_FADE: usize = 1;
 
+#[derive(Clone)]
 pub struct OverlayWindow {
     pub hwnd: HWND,
     pub dwrite_factory: IDWriteFactory,
     pub renderer: Arc<Mutex<UiRenderer>>,
     pub text_format: IDWriteTextFormat,
-    pub parts: Arc<Mutex<Vec<ImePart>>>,
-    pub current_status: Arc<Mutex<Option<crate::ime::ImeStatus>>>,
+    pub renderable: Arc<Mutex<Container>>,
+    pub current_status: Arc<Mutex<ImeStatus>>,
     pub animation: Arc<Mutex<AnimationState>>,
+    pub last_state: Arc<Mutex<LastWindowState>>,
+}
+
+pub struct LastWindowState {
+    pub alpha: u8,
+    pub x: i32,
+    pub y: i32,
+    pub caret_rect: RECT,
+}
+
+impl LastWindowState {
+    pub fn new() -> Self {
+        Self {
+            alpha: 0,
+            x: 0,
+            y: 0,
+            caret_rect: RECT::default(),
+        }
+    }
 }
 
 unsafe impl Send for OverlayWindow {}
@@ -40,7 +61,7 @@ fn set_dwm_attribute<T>(hwnd: HWND, attribute: DWMWINDOWATTRIBUTE, value: &T) {
 }
 
 impl OverlayWindow {
-    pub fn new() -> Result<Self> {
+    pub fn new() -> Result<Arc<Self>> {
         unsafe {
             let instance = GetModuleHandleW(None)?;
             let window_class = w!("AuraIME_Overlay");
@@ -71,31 +92,20 @@ impl OverlayWindow {
             text_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
             text_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
 
-            let initial_status = crate::ime::ImeStatus {
-                hwnd: 0,
-                display_name: "Loading".to_string(),
-                is_open: false,
-                conv_mode: 0,
-                has_other_modes: false,
-                lang_id: 0x0409,
-            };
-            let initial_part = ImePart::new(&initial_status.display_name, &dwrite_factory, &text_format, 32.0)?;
+            let initial_container = Container::empty();
+            let initial_width = initial_container.outer_width().ceil() as i32;
+            let initial_height = initial_container.outer_height().ceil() as i32;
 
-            let current_status = Arc::new(Mutex::new(Some(initial_status)));
-            let renderer = Arc::new(Mutex::new(UiRenderer::new(d2d_factory.clone())));
-            let parts = Arc::new(Mutex::new(vec![initial_part]));
-            let animation = Arc::new(Mutex::new(AnimationState::new()));
-
-            let overlay = Box::new(Self {
+            let overlay = Arc::new(Self {
                 hwnd: HWND::default(),
                 dwrite_factory: dwrite_factory.clone(),
-                renderer: renderer.clone(),
+                renderer: Arc::new(Mutex::new(UiRenderer::new(d2d_factory))),
                 text_format: text_format.clone(),
-                parts: parts.clone(),
-                current_status: current_status.clone(),
-                animation: animation.clone(),
+                renderable: Arc::new(Mutex::new(initial_container)),
+                current_status: Arc::new(Mutex::new(ImeStatus::default())),
+                animation: Arc::new(Mutex::new(AnimationState::new())),
+                last_state: Arc::new(Mutex::new(LastWindowState::new())),
             });
-            let overlay_ptr = overlay.as_ref() as *const _ as *const _;
 
             let hwnd = CreateWindowExW(
                 WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
@@ -104,52 +114,38 @@ impl OverlayWindow {
                 WS_POPUP,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
-                150,
-                32,
+                initial_width,
+                initial_height,
                 None,
                 None,
                 Some(instance.into()),
-                Some(overlay_ptr),
+                Some(Arc::as_ptr(&overlay) as *const _),
             )?;
-
-            let overlay_ptr = Box::into_raw(overlay);
-            (*overlay_ptr).hwnd = hwnd;
-
-            let hwnd_isize = hwnd.0 as isize;
-            std::thread::spawn(move || {
-                let hwnd = HWND(hwnd_isize as *mut _);
-                loop {
-                    if !IsWindow(Some(hwnd)).as_bool() {
-                        break;
-                    }
-
-                    if let Err(_) = DwmFlush() {
-                        std::thread::sleep(Duration::from_millis(16));
-                    }
-                    if IsWindowVisible(hwnd).as_bool() {
-                        let _ = PostMessageW(Some(hwnd), WM_USER_UPDATE_POSITION, WPARAM(0), LPARAM(0));
-                    }
-                }
-            });
 
             Self::setup_modern_look(hwnd);
 
-            let final_overlay = Self {
-                hwnd,
-                dwrite_factory: dwrite_factory.clone(),
-                renderer,
-                text_format: text_format.clone(),
-                parts,
-                current_status,
-                animation,
-            };
+            // let hwnd_isize = hwnd.0 as isize;
+            // std::thread::spawn(move || {
+            //     let hwnd = HWND(hwnd_isize as *mut _);
+            //     loop {
+            //         if !IsWindow(Some(hwnd)).as_bool() {
+            //             break;
+            //         }
+            //
+            //         if let Err(_) = DwmFlush() {
+            //             std::thread::sleep(Duration::from_millis(16));
+            //         }
+            //         if IsWindowVisible(hwnd).as_bool() {
+            //             let _ = PostMessageW(Some(hwnd), WM_USER_UPDATE_POSITION, WPARAM(0), LPARAM(0));
+            //         }
+            //     }
+            // });
 
-            Ok(final_overlay)
+            Ok(overlay)
         }
     }
 
     pub fn setup_modern_look(hwnd: HWND) {
-        // DwmExtendFrameIntoClientArea with -1 margins
         let margins = MARGINS {
             cxLeftWidth: -1,
             cxRightWidth: -1,
@@ -182,64 +178,166 @@ impl OverlayWindow {
         set_dwm_attribute(hwnd, DWMWA_EXCLUDED_FROM_PEEK, &BOOL(1));
     }
 
-    pub fn update_status(&self, status: crate::ime::ImeStatus) -> Result<()> {
-        let mut new_parts = vec![status.display_name.clone()];
-
-        if status.has_other_modes {
-            if !status.is_open {
-                new_parts.push("A".to_string());
-            } else if (status.conv_mode & IME_CMODE_NATIVE.0) == 0 {
-                new_parts.push("A".to_string());
+    pub fn move_to_caret(&self, rect: RECT) -> Result<()> {
+        let changed = {
+            let mut last_state = self.last_state.lock().unwrap();
+            if (*last_state).caret_rect == rect {
+                false
             } else {
-                let indicator = match status.lang_id & 0x3ff {
+                (*last_state).caret_rect = rect;
+                true
+            }
+        };
+
+        if !changed {
+            return Ok(());
+        }
+
+        let mut anim_lock = self.animation.lock().unwrap();
+        let skip_fade_in = anim_lock.on_activity();
+        if !skip_fade_in {
+            println!("[UI] Caret moved, showing window.");
+            let _ = unsafe { PostMessageW(Some(self.hwnd), WM_USER_SHOW_AND_FADE, WPARAM(0), LPARAM(0)) };
+        }
+        drop(anim_lock);
+
+        Ok(())
+    }
+
+    fn get_caret_rect_from_hwnd(hwnd: HWND) -> RECT {
+        unsafe {
+            let mut gui = GUITHREADINFO::default();
+            gui.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
+            let tid = GetWindowThreadProcessId(hwnd, None);
+            if GetGUIThreadInfo(tid, &mut gui).is_ok() && !gui.hwndCaret.is_invalid() {
+                let mut rect = gui.rcCaret;
+                let mut pt = POINT {
+                    x: rect.left,
+                    y: rect.top,
+                };
+                let _ = ClientToScreen(gui.hwndCaret, &mut pt);
+                rect.left = pt.x;
+                rect.top = pt.y;
+
+                let mut pt_bottom = POINT {
+                    x: gui.rcCaret.right,
+                    y: gui.rcCaret.bottom,
+                };
+                let _ = ClientToScreen(gui.hwndCaret, &mut pt_bottom);
+                rect.right = pt_bottom.x;
+                rect.bottom = pt_bottom.y;
+
+                return rect;
+            }
+
+            let mut pt = POINT::default();
+            let _ = GetCursorPos(&mut pt);
+            RECT {
+                left: pt.x,
+                top: pt.y,
+                right: pt.x,
+                bottom: pt.y,
+            }
+        }
+    }
+
+    pub fn update_status(&self, status: ImeStatus) -> Result<()> {
+        let indicator = if status.cjk_lang {
+            if !status.is_open || (status.conv_mode & IME_CMODE_NATIVE.0) == 0 {
+                Some("A")
+            } else {
+                Some(match status.lang_id & 0x3ff {
                     0x11 => "あ",
                     0x12 => "한",
                     _ => "中",
-                };
-                new_parts.push(indicator.to_string());
+                })
             }
-        }
+        } else {
+            None
+        };
 
         let mut current = self.current_status.lock().unwrap();
-        if current.as_ref() != Some(&status) {
-            let log_text = new_parts.join(" | ");
-            *current = Some(status);
-            drop(current);
+        *current = status.clone();
+        drop(current);
 
-            // Pre-generate cached ImePart layouts
-            let mut cached = Vec::with_capacity(new_parts.len());
-            for text in &new_parts {
-                match ImePart::new(text, &self.dwrite_factory, &self.text_format, 32.0) {
-                    Ok(part) => cached.push(part),
-                    Err(e) => println!("[UI] Failed to create ImePart for '{}': {:?}", text, e),
-                }
-            }
-            *self.parts.lock().unwrap() = cached;
+        let caret_rect = Self::get_caret_rect_from_hwnd(HWND(status.hwnd as *mut _));
+        {
+            let mut last_state = self.last_state.lock().unwrap();
+            (*last_state).caret_rect = caret_rect;
+        }
 
+        let text_color = D2D1_COLOR_F {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        };
+        let mut childs: Vec<Box<dyn Renderable>> = Vec::with_capacity(2);
+        let base = TextPart::with_color(
+            &status.display_name,
+            &self.dwrite_factory,
+            &self.text_format,
+            text_color,
+        )?;
+        let base_container = Container::new_with_color(
+            vec![base],
+            8.0,
+            4.0,
+            4.0,
+            8.0,
+            D2D1_COLOR_F {
+                r: 0.26,
+                g: 0.26,
+                b: 0.26,
+                a: 0.2,
+            },
+            D2D1_COLOR_F {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 0.1,
+            },
+        );
+
+        childs.push(base_container);
+        if let Some(ind) = indicator {
+            childs.push(TextPart::with_color(
+                ind,
+                &self.dwrite_factory,
+                &self.text_format,
+                text_color,
+            )?);
+        }
+        *self.renderable.lock().unwrap() = Container::new(childs, 8.0, 8.0, 8.0);
+
+        {
             let mut anim_lock = self.animation.lock().unwrap();
-            let skip_fade_in = anim_lock.update_on_status_change();
+            let skip_fade_in = anim_lock.on_activity();
             if !skip_fade_in {
                 let _ = unsafe { PostMessageW(Some(self.hwnd), WM_USER_SHOW_AND_FADE, WPARAM(0), LPARAM(0)) };
             }
-            drop(anim_lock);
-
-            println!("[UI] Status updated to: {}", log_text);
-            unsafe {
-                self.resize_to_content()?;
-                println!("[UI] InvalidateRect calling...");
-                let _ = InvalidateRect(Some(self.hwnd), None, true);
-                println!("[UI] InvalidateRect called.");
-            }
         }
+
+        println!(
+            "[UI] Status updated to: {} {}",
+            status.display_name,
+            indicator.unwrap_or("")
+        );
+        unsafe {
+            self.resize_to_content()?;
+            let _ = InvalidateRect(Some(self.hwnd), None, true);
+            println!("[UI] InvalidateRect");
+        }
+
         Ok(())
     }
 
     pub fn resize_to_content(&self) -> Result<()> {
-        let parts = self.parts.lock().unwrap();
-        let total_width = LayoutManager::total_width(&parts);
-        drop(parts);
+        let r = self.renderable.lock().unwrap();
+        let total_width = r.outer_width();
+        let total_height = r.outer_height();
+        drop(r);
 
-        println!("[UI] SetWindowPos calling... width: {}", total_width);
         let _ = unsafe {
             SetWindowPos(
                 self.hwnd,
@@ -247,59 +345,60 @@ impl OverlayWindow {
                 0,
                 0,
                 total_width.ceil() as i32,
-                32,
+                total_height.ceil() as i32,
                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
             )
         };
-        println!("[UI] SetWindowPos called.");
         Ok(())
     }
 
-    fn update_position_hwnd(hwnd: HWND) -> Result<()> {
-        let overlay = match Self::get_overlay(hwnd) {
-            Some(o) => o,
-            None => return Ok(()),
-        };
-
-        // Fade in animation
-        let (alpha, vertical_offset) = {
-            let anim = overlay.animation.lock().unwrap();
+    fn update_position(&self, hwnd: HWND) -> LRESULT {
+        let (alpha_f, vertical_offset) = {
+            let anim = self.animation.lock().unwrap();
             anim.get_alpha_and_offset()
         };
+        let alpha = (alpha_f * 255.0) as u8;
 
         unsafe {
-            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), (alpha * 255.0) as u8, LWA_ALPHA);
+            let mut last = self.last_state.lock().unwrap();
+            if last.alpha != alpha {
+                let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA);
+                last.alpha = alpha;
+            }
 
-            let mut info = GUITHREADINFO::default();
-            info.cbSize = size_of::<GUITHREADINFO>() as u32;
-            if GetGUIThreadInfo(0, &mut info).is_ok() {
-                let mut pt = if !info.hwndCaret.is_invalid() {
-                    let mut pt = POINT {
-                        x: info.rcCaret.left,
-                        y: info.rcCaret.bottom,
-                    };
-                    let _ = ClientToScreen(info.hwndCaret, &mut pt);
-                    pt
-                } else {
-                    let mut pt = POINT::default();
-                    let _ = GetCursorPos(&mut pt);
-                    pt
-                };
+            if last.caret_rect.left != 0 || last.caret_rect.top != 0 {
+                let dpi = GetDpiForWindow(hwnd);
+                let scale = dpi as f32 / 96.0;
+                let offset_y = ((20.0 + vertical_offset) * scale) as i32;
 
-                pt.y += 20 + vertical_offset as i32;
-                SetWindowPos(hwnd, Some(HWND_TOPMOST), pt.x, pt.y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE)?;
+                let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+                let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+                let vcx = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+                let vcy = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+
+                let x = last.caret_rect.left.clamp(vx, vx + vcx);
+                let y = last.caret_rect.bottom + offset_y.clamp(vy, vy + vcy);
+
+                if last.x != x || last.y != y {
+                    SetWindowPos(hwnd, Some(HWND_TOPMOST), x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE)
+                        .expect("SetWindowPos failed");
+                    last.x = x;
+                    last.y = y;
+                }
             }
         }
-        Ok(())
+        LRESULT(0)
     }
 
     fn on_create(hwnd: HWND, lparam: LPARAM) -> LRESULT {
         println!("[UI] WM_CREATE");
         let create_struct = lparam.0 as *const CREATESTRUCTW;
-        let overlay = unsafe { (*create_struct).lpCreateParams as *mut OverlayWindow };
-        unsafe {
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA, overlay as isize);
-        }
+        let overlay_ptr = unsafe { (*create_struct).lpCreateParams as *mut OverlayWindow };
+
+        unsafe { (*overlay_ptr).hwnd = hwnd };
+        let overlay = unsafe { Arc::from_raw(overlay_ptr) };
+        unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, Arc::into_raw(overlay) as isize) };
+
         LRESULT(0)
     }
 
@@ -312,11 +411,6 @@ impl OverlayWindow {
         LRESULT(0)
     }
 
-    fn on_vsync(hwnd: HWND) -> LRESULT {
-        Self::update_position_hwnd(hwnd).expect("Failed to update position");
-        LRESULT(0)
-    }
-
     fn on_paint(hwnd: HWND, overlay: &OverlayWindow) -> LRESULT {
         println!("[UI] WM_PAINT");
 
@@ -324,22 +418,15 @@ impl OverlayWindow {
         let _hdc = unsafe { BeginPaint(hwnd, &mut ps) };
 
         let mut rect = RECT::default();
-        unsafe {
-            let _ = GetClientRect(hwnd, &mut rect);
-        }
-        let height = (rect.bottom - rect.top) as f32;
-
+        let _ = unsafe { GetClientRect(hwnd, &mut rect) };
         {
             let mut renderer = overlay.renderer.lock().unwrap();
             if let Err(e) = renderer.ensure_target(hwnd) {
                 println!("[UI] Failed to create RenderTarget: {:?}", e);
             } else {
                 let status_lock = overlay.current_status.lock().unwrap();
-                if let Some(status) = status_lock.as_ref() {
-                    let parts = overlay.parts.lock().unwrap();
-                    println!("[UI] Drawing {} parts", parts.len());
-                    renderer.draw_frame(status, &parts, height);
-                }
+                let r = overlay.renderable.lock().unwrap();
+                renderer.draw_frame(&status_lock, &*r);
             }
         }
 
@@ -349,10 +436,10 @@ impl OverlayWindow {
         LRESULT(0)
     }
 
-    fn on_size(overlay: &OverlayWindow, lparam: LPARAM) -> LRESULT {
+    fn on_size(&self, lparam: LPARAM) -> LRESULT {
         let width = (lparam.0 & 0xFFFF) as u32;
         let height = ((lparam.0 >> 16) & 0xFFFF) as u32;
-        let renderer = overlay.renderer.lock().unwrap();
+        let renderer = self.renderer.lock().unwrap();
         renderer.resize(width, height);
         LRESULT(0)
     }
@@ -361,21 +448,24 @@ impl OverlayWindow {
         unsafe {
             let _ = KillTimer(Some(hwnd), TIMER_ID_FADE);
         }
-        let overlay = unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) as *mut OverlayWindow };
-        if !overlay.is_null() {
-            let _ = unsafe { Box::from_raw(overlay) };
+        let overlay_ptr = unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) as *const OverlayWindow };
+        if !overlay_ptr.is_null() {
+            let _ = unsafe { Arc::from_raw(overlay_ptr) };
         }
         LRESULT(0)
     }
 
-    fn on_timer(hwnd: HWND, overlay: &OverlayWindow, timer_id: usize) -> LRESULT {
+    fn on_timer(&self, hwnd: HWND, timer_id: usize) -> LRESULT {
         if timer_id == TIMER_ID_FADE {
+            let _ = Self::update_position(self, hwnd);
+
             let phase = {
-                let anim = overlay.animation.lock().unwrap();
+                let anim = self.animation.lock().unwrap();
                 anim.get_phase()
             };
 
             if phase == AnimationPhase::Finished {
+                println!("[UI] Animation finished, hiding window");
                 unsafe {
                     let _ = ShowWindow(hwnd, SW_HIDE);
                     let _ = KillTimer(Some(hwnd), TIMER_ID_FADE);
@@ -396,10 +486,13 @@ impl OverlayWindow {
             WM_CREATE => Self::on_create(hwnd, lparam),
             // WM_NCACTIVATE => Self::on_nc_activate(hwnd, msg, wparam, lparam),
             // WM_ERASEBKGND => LRESULT(1),
-            WM_USER_UPDATE_POSITION => Self::on_vsync(hwnd),
+            WM_USER_UPDATE_POSITION => match Self::get_overlay(hwnd) {
+                Some(overlay) => Self::update_position(overlay, hwnd),
+                None => LRESULT(0),
+            },
             WM_USER_SHOW_AND_FADE => Self::on_show_and_fade(hwnd),
             WM_TIMER => match Self::get_overlay(hwnd) {
-                Some(overlay) => Self::on_timer(hwnd, overlay, wparam.0),
+                Some(overlay) => Self::on_timer(overlay, hwnd, wparam.0),
                 None => LRESULT(0),
             },
             WM_PAINT => match Self::get_overlay(hwnd) {
@@ -414,9 +507,7 @@ impl OverlayWindow {
             }
             WM_NCDESTROY => Self::on_ncdestroy(hwnd),
             WM_DESTROY => {
-                unsafe {
-                    PostQuitMessage(0);
-                }
+                unsafe { PostQuitMessage(0) };
                 LRESULT(0)
             }
             _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
