@@ -3,6 +3,7 @@ use crate::ui::accent;
 use crate::ui::animation::{AnimationPhase, AnimationState};
 use crate::ui::parts::{Container, Part, Renderable, TextPart};
 use crate::ui::renderer::UiRenderer;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use windows::core::*;
 use windows::Win32::Foundation::*;
@@ -19,7 +20,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 const WM_USER_UPDATE_POSITION: u32 = WM_USER + 1;
 const WM_USER_SHOW_AND_FADE: u32 = WM_USER + 2;
-const TIMER_ID_FADE: usize = 1;
+const WM_USER_TICK: u32 = WM_USER + 3;
 
 #[derive(Clone)]
 pub struct OverlayWindow {
@@ -31,6 +32,7 @@ pub struct OverlayWindow {
     pub current_status: Arc<Mutex<ImeStatus>>,
     pub animation: Arc<Mutex<AnimationState>>,
     pub last_state: Arc<Mutex<LastWindowState>>,
+    pub vsync_running: Arc<AtomicBool>,
 }
 
 pub struct LastWindowState {
@@ -105,6 +107,7 @@ impl OverlayWindow {
                 current_status: Arc::new(Mutex::new(ImeStatus::default())),
                 animation: Arc::new(Mutex::new(AnimationState::new())),
                 last_state: Arc::new(Mutex::new(LastWindowState::new())),
+                vsync_running: Arc::new(AtomicBool::new(false)),
             });
 
             let hwnd = CreateWindowExW(
@@ -123,23 +126,6 @@ impl OverlayWindow {
             )?;
 
             Self::setup_modern_look(hwnd);
-
-            // let hwnd_isize = hwnd.0 as isize;
-            // std::thread::spawn(move || {
-            //     let hwnd = HWND(hwnd_isize as *mut _);
-            //     loop {
-            //         if !IsWindow(Some(hwnd)).as_bool() {
-            //             break;
-            //         }
-            //
-            //         if let Err(_) = DwmFlush() {
-            //             std::thread::sleep(Duration::from_millis(16));
-            //         }
-            //         if IsWindowVisible(hwnd).as_bool() {
-            //             let _ = PostMessageW(Some(hwnd), WM_USER_UPDATE_POSITION, WPARAM(0), LPARAM(0));
-            //         }
-            //     }
-            // });
 
             Ok(overlay)
         }
@@ -209,6 +195,7 @@ impl OverlayWindow {
             let mut gui = GUITHREADINFO::default();
             gui.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
             let tid = GetWindowThreadProcessId(hwnd, None);
+
             if GetGUIThreadInfo(tid, &mut gui).is_ok() && !gui.hwndCaret.is_invalid() {
                 let mut rect = gui.rcCaret;
                 let mut pt = POINT {
@@ -346,13 +333,15 @@ impl OverlayWindow {
                 0,
                 total_width.ceil() as i32,
                 total_height.ceil() as i32,
-                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW,
             )
         };
         Ok(())
     }
 
     fn update_position(&self, hwnd: HWND) -> LRESULT {
+        let caret_rect = Self::get_caret_rect_from_hwnd(hwnd);
+
         let (alpha_f, vertical_offset) = {
             let anim = self.animation.lock().unwrap();
             anim.get_alpha_and_offset()
@@ -364,6 +353,10 @@ impl OverlayWindow {
             if last.alpha != alpha {
                 let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA);
                 last.alpha = alpha;
+            }
+
+            if caret_rect != last.caret_rect {
+                last.caret_rect = caret_rect;
             }
 
             if last.caret_rect.left != 0 || last.caret_rect.top != 0 {
@@ -402,12 +395,33 @@ impl OverlayWindow {
         LRESULT(0)
     }
 
+    fn start_vsync_thread(overlay: &OverlayWindow, hwnd: HWND) {
+        // Only start a new vsync thread if isn't running
+        if !overlay.vsync_running.swap(true, Ordering::SeqCst) {
+            let running = overlay.vsync_running.clone();
+            let hwnd_raw = hwnd.0 as isize;
+            std::thread::spawn(move || {
+                let hwnd = HWND(hwnd_raw as *mut core::ffi::c_void);
+                while running.load(Ordering::SeqCst) {
+                    unsafe {
+                        let _ = DwmFlush();
+                        let _ = PostMessageW(Some(hwnd), WM_USER_TICK, WPARAM(0), LPARAM(0));
+                    }
+                }
+            });
+        }
+    }
+
     fn on_show_and_fade(hwnd: HWND) -> LRESULT {
         unsafe {
             let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 0, LWA_ALPHA);
             let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-            let _ = SetTimer(Some(hwnd), TIMER_ID_FADE, 16, None);
         }
+
+        if let Some(overlay) = Self::get_overlay(hwnd) {
+            Self::start_vsync_thread(overlay, hwnd);
+        }
+
         LRESULT(0)
     }
 
@@ -445,30 +459,32 @@ impl OverlayWindow {
     }
 
     fn on_ncdestroy(hwnd: HWND) -> LRESULT {
-        unsafe {
-            let _ = KillTimer(Some(hwnd), TIMER_ID_FADE);
-        }
         let overlay_ptr = unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) as *const OverlayWindow };
         if !overlay_ptr.is_null() {
-            let _ = unsafe { Arc::from_raw(overlay_ptr) };
+            let overlay = unsafe { Arc::from_raw(overlay_ptr) };
+            overlay.vsync_running.store(false, Ordering::SeqCst);
         }
         LRESULT(0)
     }
 
-    fn on_timer(&self, hwnd: HWND, timer_id: usize) -> LRESULT {
-        if timer_id == TIMER_ID_FADE {
-            let _ = Self::update_position(self, hwnd);
+    fn on_tick(&self, hwnd: HWND) -> LRESULT {
+        let _ = Self::update_position(self, hwnd);
 
-            let phase = {
-                let anim = self.animation.lock().unwrap();
-                anim.get_phase()
-            };
+        let phase = {
+            let anim = self.animation.lock().unwrap();
+            anim.get_phase()
+        };
 
-            if phase == AnimationPhase::Finished {
+        if phase == AnimationPhase::Finished {
+            // Use compare_exchange to ensure hide logic runs exactly once
+            if self
+                .vsync_running
+                .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
                 println!("[UI] Animation finished, hiding window");
                 unsafe {
                     let _ = ShowWindow(hwnd, SW_HIDE);
-                    let _ = KillTimer(Some(hwnd), TIMER_ID_FADE);
                 }
             }
         }
@@ -491,8 +507,8 @@ impl OverlayWindow {
                 None => LRESULT(0),
             },
             WM_USER_SHOW_AND_FADE => Self::on_show_and_fade(hwnd),
-            WM_TIMER => match Self::get_overlay(hwnd) {
-                Some(overlay) => Self::on_timer(overlay, hwnd, wparam.0),
+            WM_USER_TICK => match Self::get_overlay(hwnd) {
+                Some(overlay) => Self::on_tick(overlay, hwnd),
                 None => LRESULT(0),
             },
             WM_PAINT => match Self::get_overlay(hwnd) {

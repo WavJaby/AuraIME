@@ -99,6 +99,11 @@ pub fn get_status_from_hwnd(hwnd: HWND) -> Option<ImeStatus> {
             hwnd, is_open, conv_val, hkl.0 as usize, status_name, cjk_lang
         );
 
+        // Not enable
+        if !cjk_lang && !is_open {
+            return None;
+        }
+
         Some(ImeStatus {
             hwnd: hwnd.0 as isize,
             display_name: status_name,
