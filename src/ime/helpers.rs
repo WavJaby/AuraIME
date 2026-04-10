@@ -167,25 +167,6 @@ pub(super) fn get_open_status(ime_hwnd: HWND) -> bool {
     open_res != 0
 }
 
-#[allow(dead_code)]
-pub(super) fn set_open_status(ime_hwnd: HWND, open: bool) {
-    const IMC_SETOPENSTATUS: u32 = 0x0006;
-
-    unsafe {
-        let result = SendMessageTimeoutW(
-            ime_hwnd,
-            WM_IME_CONTROL,
-            WPARAM(IMC_SETOPENSTATUS as usize),
-            LPARAM(open as isize),
-            SMTO_ABORTIFHUNG | SMTO_NORMAL,
-            100,
-            None,
-        );
-
-        println!("[IME] SetOpenStatus: {:?}", result);
-    }
-}
-
 pub(super) fn get_conv_mode(ime_hwnd: HWND) -> IME_CONVERSION_MODE {
     const IMC_GETCONVERSIONMODE: u32 = 0x0001;
 
