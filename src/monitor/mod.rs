@@ -35,7 +35,7 @@ pub fn run_monitor(tx: Sender<MonitorEvent>) -> windows::core::Result<()> {
             if !hwnd.is_invalid() {
                 if let Some(status) = crate::ime::get_status_from_hwnd(hwnd) {
                     match tx.send(MonitorEvent::StatusChanged(status)) {
-                        Ok(_) => println!("[Monitor] StatusChanged event sent"),
+                        Ok(_) => {},
                         Err(e) => eprintln!("[Monitor] Failed to send StatusChanged event: {:?}", e),
                     }
                 }

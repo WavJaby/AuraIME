@@ -6,7 +6,9 @@ use std::os::windows::ffi::OsStringExt;
 use std::sync::Mutex;
 use windows::Win32::Foundation::*;
 use windows::Win32::UI::Accessibility::{
-    UIA_ComboBoxControlTypeId, UIA_DocumentControlTypeId, UIA_EditControlTypeId, UIA_IsPasswordPropertyId,
+    IUIAutomationElement, UIA_ComboBoxControlTypeId, UIA_DocumentControlTypeId, UIA_EditControlTypeId,
+    UIA_IsPasswordPropertyId, UIA_IsTextPatternAvailablePropertyId, UIA_ValueIsReadOnlyPropertyId,
+    UIA_CONTROLTYPE_ID,
 };
 use windows::Win32::UI::Input::Ime::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
@@ -98,6 +100,23 @@ fn is_chromium_window(hwnd: HWND) -> bool {
     }
 }
 
+fn uia_is_readonly(element: &IUIAutomationElement) -> bool {
+    unsafe { element.GetCurrentPropertyValue(UIA_ValueIsReadOnlyPropertyId) }
+        .is_ok_and(|variant| bool::try_from(&variant).unwrap_or(false))
+}
+
+fn uia_is_text_pattern_available(element: &IUIAutomationElement) -> bool {
+    unsafe { element.GetCurrentPropertyValue(UIA_IsTextPatternAvailablePropertyId) }
+        .is_ok_and(|variant| bool::try_from(&variant).unwrap_or(false))
+}
+
+fn uia_is_password_field(element: &IUIAutomationElement) -> bool {
+    unsafe { element.GetCurrentPropertyValue(UIA_IsPasswordPropertyId) }
+        .is_ok_and(|variant| bool::try_from(&variant).unwrap_or(false))
+}
+
+static mut LAST_CONTROL_TYPE: Option<UIA_CONTROLTYPE_ID> = None;
+
 pub fn is_chromium_input_focused(hwnd: HWND) -> bool {
     if !is_chromium_window(hwnd) {
         return true;
@@ -117,30 +136,44 @@ pub fn is_chromium_input_focused(hwnd: HWND) -> bool {
             return false;
         };
 
+        if uia_is_password_field(&element) {
+            return false;
+        }
+
         // Check the control type
         let Ok(control_type) = element.CurrentControlType() else {
             return false;
         };
 
-        println!("[IME] Control type: {:?}", control_type);
-        // UIA_EditControlTypeId // General plain text box
-        // UIA_DocumentControlTypeId // Complex editing area (Notion, VSCode)
-        // UIA_ComboBoxControlTypeId // Input box with dropdown suggestions
-
-        if control_type != UIA_EditControlTypeId
-            && control_type != UIA_DocumentControlTypeId
-            && control_type != UIA_ComboBoxControlTypeId
-        {
-            return false;
+        if LAST_CONTROL_TYPE != Some(control_type) {
+            LAST_CONTROL_TYPE = Some(control_type);
+            println!("[IME] Control type: {:?}", control_type);
         }
 
-        if let Ok(variant) = element.GetCurrentPropertyValue(UIA_IsPasswordPropertyId)
-            && bool::try_from(&variant).unwrap_or(false)
-        {
-            return false;
-        }
+        let readonly = uia_is_readonly(&element);
+        let has_text_pattern = uia_is_text_pattern_available(&element);
 
-        true
+        #[allow(nonstandard_style)]
+        match control_type {
+            // UIA_EditControlTypeId: General plain text box
+            // UIA_ComboBoxControlTypeId: Input box with dropdown suggestions
+            UIA_EditControlTypeId | UIA_ComboBoxControlTypeId => {
+                // Standard input fields (Edit, ComboBox)
+                // Inputtable when not read-only
+                !readonly
+            }
+
+            // UIA_DocumentControlTypeId: Complex editing area (Notion, VSCode)
+            UIA_DocumentControlTypeId => {
+                // Document block (Document) -> <body> or <main> of web page
+                !readonly && has_text_pattern
+            }
+            
+            // Group or Panel (Group, Pane, etc.) -> custom input box <div>
+            _ => {
+                has_text_pattern
+            }
+        }
     }
 }
 
@@ -161,8 +194,16 @@ pub fn get_status_from_hwnd(hwnd: HWND) -> Option<ImeStatus> {
         let conv_mode;
 
         // Check if caret is visible
-        let mut has_caret = true;
-        if has_caret {
+        let mut has_caret = false;
+
+        // First check with Win32 API (for system native input box)
+        let mut gti = GUITHREADINFO::default();
+        gti.cbSize = size_of::<GUITHREADINFO>() as u32;
+        if GetGUIThreadInfo(tid, &mut gti).is_ok() && !gti.hwndCaret.is_invalid() {
+            has_caret = true;
+        }
+
+        if !has_caret {
             has_caret = is_chromium_input_focused(hwnd);
         }
 
@@ -197,11 +238,6 @@ pub fn get_status_from_hwnd(hwnd: HWND) -> Option<ImeStatus> {
             "[IME] State changed - hwnd: {:?},hkl: {:08X}, name: {},  is_open: {}, mode: {:x}, cjk_lang: {}, has_caret: {}",
             hwnd, hkl.0 as usize, status_name, is_open, conv_val, cjk_lang, has_caret
         );
-
-        // Not enable
-        if !cjk_lang && !is_open {
-            return None;
-        }
 
         Some(ImeStatus {
             hwnd: hwnd.0 as isize,
