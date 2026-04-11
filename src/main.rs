@@ -6,9 +6,12 @@ use std::sync::mpsc;
 use std::thread;
 use windows::core::*;
 use windows::Win32::System::Com::*;
+use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 fn main() -> Result<()> {
+    unsafe { let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2); }
+
     let (tx, rx) = mpsc::channel();
 
     // Initialize COM for the main thread
@@ -22,6 +25,11 @@ fn main() -> Result<()> {
     // Start monitoring in a background thread
     let tx_monitor = tx.clone();
     thread::spawn(move || {
+        // Explicitly initialize COM as STA in the background thread
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        
         if let Err(e) = monitor::run_monitor(tx_monitor) {
             eprintln!("Monitor error: {:?}", e);
         }
@@ -33,9 +41,6 @@ fn main() -> Result<()> {
         println!("[Main] UI update thread started.");
         while let Ok(event) = rx.recv() {
             match event {
-                monitor::MonitorEvent::LanguageChanged => {
-                    // TSF is unused
-                }
                 monitor::MonitorEvent::StatusChanged(status) => {
                     println!("[Main] Status changed event received");
                     let _ = overlay_ui.update_status(status);

@@ -1,5 +1,3 @@
-pub mod tsf;
-
 use std::sync::mpsc::Sender;
 use windows::core::Interface;
 use windows::Win32::System::Com::*;
@@ -7,8 +5,9 @@ use windows::Win32::UI::TextServices::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows_core::link;
 
+pub mod caret;
+
 pub enum MonitorEvent {
-    LanguageChanged,
     StatusChanged(crate::ime::ImeStatus),
 }
 
@@ -42,8 +41,8 @@ pub fn run_monitor(tx: Sender<MonitorEvent>) -> windows::core::Result<()> {
                 }
             }
 
-            // Sleep to prevent high CPU usage (approx 30 FPS)
-            windows::Win32::System::Threading::Sleep(32);
+            // Sleep to prevent high CPU usage (approx 20 FPS)
+            windows::Win32::System::Threading::Sleep(50);
         }
     }
 }
