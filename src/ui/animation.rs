@@ -3,7 +3,6 @@ use std::time::{Duration, Instant};
 pub const FADE_IN_DURATION: Duration = Duration::from_millis(100);
 pub const SHOW_DURATION: Duration = Duration::from_millis(800);
 pub const FADE_OUT_DURATION: Duration = Duration::from_millis(100);
-pub const ANIM_OFFSET: f32 = 20.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AnimationPhase {
@@ -61,23 +60,23 @@ impl AnimationState {
         }
     }
 
-    pub fn get_alpha_and_offset(&self) -> (f32, f32) {
+    pub fn get_time(&self) -> f32 {
         let start = match self.start_time {
             Some(s) => s,
-            None => return (0.0, ANIM_OFFSET),
+            None => return 0.0,
         };
 
         let elapsed = start.elapsed();
         if elapsed < FADE_IN_DURATION {
             let t = elapsed.as_secs_f32() / FADE_IN_DURATION.as_secs_f32();
-            (t, ANIM_OFFSET * (1.0 - t))
+            t
         } else if elapsed < FADE_IN_DURATION + SHOW_DURATION {
-            (1.0, 0.0)
+            1.0
         } else if elapsed < FADE_IN_DURATION + SHOW_DURATION + FADE_OUT_DURATION {
             let t = (elapsed - (FADE_IN_DURATION + SHOW_DURATION)).as_secs_f32() / FADE_OUT_DURATION.as_secs_f32();
-            (1.0 - t, ANIM_OFFSET * t)
+            1.0 - t
         } else {
-            (0.0, ANIM_OFFSET)
+            0.0
         }
     }
 }

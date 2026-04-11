@@ -1,6 +1,7 @@
-use crate::ime::ImeStatus;
+﻿use crate::ime::ImeStatus;
 use crate::ui::accent;
 use crate::ui::animation::{AnimationPhase, AnimationState};
+use crate::monitor::caret;
 use crate::ui::parts::{Container, Part, Renderable, TextPart};
 use crate::ui::renderer::UiRenderer;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -40,16 +41,12 @@ pub struct LastWindowState {
     pub x: i32,
     pub y: i32,
     pub caret_rect: RECT,
+    pub hwnd: HWND,
 }
 
 impl LastWindowState {
     pub fn new() -> Self {
-        Self {
-            alpha: 0,
-            x: 0,
-            y: 0,
-            caret_rect: RECT::default(),
-        }
+        Self { alpha: 0, x: 0, y: 0, caret_rect: RECT::default(), hwnd: HWND::default() }
     }
 }
 
@@ -132,12 +129,7 @@ impl OverlayWindow {
     }
 
     pub fn setup_modern_look(hwnd: HWND) {
-        let margins = MARGINS {
-            cxLeftWidth: -1,
-            cxRightWidth: -1,
-            cyTopHeight: -1,
-            cyBottomHeight: -1,
-        };
+        let margins = MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 };
         unsafe {
             let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
         }
@@ -190,45 +182,11 @@ impl OverlayWindow {
         Ok(())
     }
 
-    fn get_caret_rect_from_hwnd(hwnd: HWND) -> RECT {
-        unsafe {
-            let mut gui = GUITHREADINFO::default();
-            gui.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
-            let tid = GetWindowThreadProcessId(hwnd, None);
-
-            if GetGUIThreadInfo(tid, &mut gui).is_ok() && !gui.hwndCaret.is_invalid() {
-                let mut rect = gui.rcCaret;
-                let mut pt = POINT {
-                    x: rect.left,
-                    y: rect.top,
-                };
-                let _ = ClientToScreen(gui.hwndCaret, &mut pt);
-                rect.left = pt.x;
-                rect.top = pt.y;
-
-                let mut pt_bottom = POINT {
-                    x: gui.rcCaret.right,
-                    y: gui.rcCaret.bottom,
-                };
-                let _ = ClientToScreen(gui.hwndCaret, &mut pt_bottom);
-                rect.right = pt_bottom.x;
-                rect.bottom = pt_bottom.y;
-
-                return rect;
-            }
-
-            let mut pt = POINT::default();
-            let _ = GetCursorPos(&mut pt);
-            RECT {
-                left: pt.x,
-                top: pt.y,
-                right: pt.x,
-                bottom: pt.y,
-            }
-        }
-    }
-
     pub fn update_status(&self, status: ImeStatus) -> Result<()> {
+        if !status.has_caret {
+            return Ok(());
+        }
+
         let indicator = if status.cjk_lang {
             if !status.is_open || (status.conv_mode & IME_CMODE_NATIVE.0) == 0 {
                 Some("A")
@@ -247,53 +205,47 @@ impl OverlayWindow {
         *current = status.clone();
         drop(current);
 
-        let caret_rect = Self::get_caret_rect_from_hwnd(HWND(status.hwnd as *mut _));
         {
+            let hwnd_target = HWND(status.hwnd as *mut _);
             let mut last_state = self.last_state.lock().unwrap();
-            (*last_state).caret_rect = caret_rect;
+            let same_hwnd = last_state.hwnd.0 == hwnd_target.0;
+            match caret::get_caret_rect(hwnd_target) {
+                Some(rect) => {
+                    last_state.caret_rect = rect;
+                    last_state.hwnd = hwnd_target;
+                }
+                None => {
+                    if !same_hwnd || last_state.caret_rect == RECT::default() {
+                        // Different text box or no previous position — fall back to cursor
+                        unsafe {
+                            let mut pt = POINT::default();
+                            let _ = GetCursorPos(&mut pt);
+                            last_state.caret_rect = RECT { left: pt.x, top: pt.y, right: pt.x, bottom: pt.y };
+                        }
+                    }
+                    // Same hwnd: UIA transiently failed (e.g. IME mode change) — keep old rect
+                    last_state.hwnd = hwnd_target;
+                }
+            }
+            drop(last_state);
         }
 
-        let text_color = D2D1_COLOR_F {
-            r: 1.0,
-            g: 1.0,
-            b: 1.0,
-            a: 1.0,
-        };
+        let text_color = D2D1_COLOR_F { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
         let mut childs: Vec<Box<dyn Renderable>> = Vec::with_capacity(2);
-        let base = TextPart::with_color(
-            &status.display_name,
-            &self.dwrite_factory,
-            &self.text_format,
-            text_color,
-        )?;
+        let base = TextPart::with_color(&status.display_name, &self.dwrite_factory, &self.text_format, text_color)?;
         let base_container = Container::new_with_color(
             vec![base],
             8.0,
             4.0,
             4.0,
             8.0,
-            D2D1_COLOR_F {
-                r: 0.26,
-                g: 0.26,
-                b: 0.26,
-                a: 0.2,
-            },
-            D2D1_COLOR_F {
-                r: 1.0,
-                g: 1.0,
-                b: 1.0,
-                a: 0.1,
-            },
+            D2D1_COLOR_F { r: 0.26, g: 0.26, b: 0.26, a: 0.2 },
+            D2D1_COLOR_F { r: 1.0, g: 1.0, b: 1.0, a: 0.1 },
         );
 
         childs.push(base_container);
         if let Some(ind) = indicator {
-            childs.push(TextPart::with_color(
-                ind,
-                &self.dwrite_factory,
-                &self.text_format,
-                text_color,
-            )?);
+            childs.push(TextPart::with_color(ind, &self.dwrite_factory, &self.text_format, text_color)?);
         }
         *self.renderable.lock().unwrap() = Container::new(childs, 8.0, 8.0, 8.0);
 
@@ -305,11 +257,7 @@ impl OverlayWindow {
             }
         }
 
-        println!(
-            "[UI] Status updated to: {} {}",
-            status.display_name,
-            indicator.unwrap_or("")
-        );
+        println!("[UI] Status updated to: {} {}", status.display_name, indicator.unwrap_or(""));
         unsafe {
             self.resize_to_content()?;
             let _ = InvalidateRect(Some(self.hwnd), None, true);
@@ -340,37 +288,63 @@ impl OverlayWindow {
     }
 
     fn update_position(&self, hwnd: HWND) -> LRESULT {
-        let caret_rect = Self::get_caret_rect_from_hwnd(hwnd);
+        let caret_rect = caret::get_caret_rect(hwnd);
 
-        let (alpha_f, vertical_offset) = {
+        let r = self.renderable.lock().unwrap();
+        let total_width = r.outer_width();
+        let total_height = r.outer_height();
+        drop(r);
+
+        let mut last = self.last_state.lock().unwrap();
+        if let Some(rect) = caret_rect {
+            if rect != last.caret_rect {
+                last.caret_rect = rect;
+            }
+        }
+
+        let t = {
             let anim = self.animation.lock().unwrap();
-            anim.get_alpha_and_offset()
+            anim.get_time()
         };
-        let alpha = (alpha_f * 255.0) as u8;
 
         unsafe {
-            let mut last = self.last_state.lock().unwrap();
+            // Update window transparency, fades in/out
+            let alpha = (t * 255.0) as u8;
             if last.alpha != alpha {
                 let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA);
                 last.alpha = alpha;
             }
 
-            if caret_rect != last.caret_rect {
-                last.caret_rect = caret_rect;
-            }
-
+            // Slide in/out animation
             if last.caret_rect.left != 0 || last.caret_rect.top != 0 {
                 let dpi = GetDpiForWindow(hwnd);
                 let scale = dpi as f32 / 96.0;
-                let offset_y = ((20.0 + vertical_offset) * scale) as i32;
+                let total_offset_y = 20f32;
+                let padding_x = 8f32;
+                let padding_y = 8f32;
+                let offset_y = (((total_offset_y + padding_y) - (t * total_offset_y)) * scale) as i32;
 
-                let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
-                let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-                let vcx = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-                let vcy = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+                // Check if placing below caret would overflow the screen
+                let monitor = MonitorFromRect(&last.caret_rect, MONITOR_DEFAULTTONEAREST);
+                let mut monitor_info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+                let _ = GetMonitorInfoW(monitor, &mut monitor_info);
+                let screen_left = monitor_info.rcWork.left;
+                let screen_right = monitor_info.rcWork.right;
+                let screen_bottom = monitor_info.rcWork.bottom;
 
-                let x = last.caret_rect.left.clamp(vx, vx + vcx);
-                let y = last.caret_rect.bottom + offset_y.clamp(vy, vy + vcy);
+                // Clamp x to screen boundaries
+                let x_max = screen_right - total_width.ceil() as i32;
+                let x = (last.caret_rect.left + padding_x as i32).clamp(screen_left, x_max);
+
+                // Clamp y with offset, ensuring no overflow
+                let y_below_total = last.caret_rect.bottom + (total_height + total_offset_y).ceil() as i32;
+                let y_below = last.caret_rect.bottom + offset_y;
+                let above_fits = last.caret_rect.top - total_height.ceil() as i32 >= monitor_info.rcWork.top;
+                let y = if y_below_total > screen_bottom && above_fits {
+                    last.caret_rect.top - total_height.ceil() as i32 - offset_y
+                } else {
+                    y_below
+                };
 
                 if last.x != x || last.y != y {
                     SetWindowPos(hwnd, Some(HWND_TOPMOST), x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE)
@@ -380,6 +354,7 @@ impl OverlayWindow {
                 }
             }
         }
+        drop(last);
         LRESULT(0)
     }
 
