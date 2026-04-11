@@ -13,10 +13,7 @@ pub struct UiRenderer {
 
 impl UiRenderer {
     pub fn new(d2d_factory: ID2D1Factory) -> Self {
-        Self {
-            d2d_factory,
-            render_target: None,
-        }
+        Self { d2d_factory, render_target: None }
     }
 
     pub fn ensure_target(&mut self, hwnd: HWND) -> Result<()> {
@@ -29,10 +26,7 @@ impl UiRenderer {
         let width = (rect.right - rect.left) as u32;
         let height = (rect.bottom - rect.top) as u32;
 
-        println!(
-            "[UI] Creating RenderTarget for hwnd: {:?}, size: {}x{}",
-            hwnd, width, height
-        );
+        println!("[UI] Creating RenderTarget for hwnd: {:?}, size: {}x{}", hwnd, width, height);
 
         let props = D2D1_RENDER_TARGET_PROPERTIES {
             r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
@@ -65,14 +59,7 @@ impl UiRenderer {
 
         unsafe {
             rt.BeginDraw();
-        }
-        unsafe {
-            rt.Clear(Some(&D2D1_COLOR_F {
-                r: 0.0,
-                g: 0.0,
-                b: 0.0,
-                a: 0.0,
-            }));
+            rt.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
         }
 
         row.render(rt, 0.0, 0.0);
