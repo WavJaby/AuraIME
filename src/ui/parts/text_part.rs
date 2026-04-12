@@ -1,11 +1,20 @@
 use super::part_trait::Part;
 use super::render::Renderable;
-use crate::ui::parts::PartBase;
+use crate::ui::parts::{Padding, PartBase};
+use std::sync::OnceLock;
 use windows::core::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows_numerics::Vector2;
 
+struct TextFormatState {
+    factory: IDWriteFactory,
+    format: IDWriteTextFormat,
+}
+
+static TEXT_FORMAT: OnceLock<TextFormatState> = OnceLock::new();
+
+#[allow(dead_code)]
 pub struct TextPart {
     pub base: PartBase,
     pub text: String,
@@ -15,12 +24,35 @@ pub struct TextPart {
 }
 
 impl TextPart {
-    pub fn measure_text(
-        wide: &Vec<u16>,
-        factory: &IDWriteFactory,
-        text_format: &IDWriteTextFormat,
-    ) -> Result<(f32, f32)> {
-        let measure_layout = unsafe { factory.CreateTextLayout(wide, text_format, f32::MAX, f32::MAX)? };
+    pub fn init(font_name: &str, font_size: f32) {
+        TEXT_FORMAT.get_or_init(|| unsafe {
+            let factory: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)
+                .expect("Failed to create DWriteFactory");
+            let font_name_wide: Vec<u16> = font_name.encode_utf16().chain(std::iter::once(0)).collect();
+            let format = factory
+                .CreateTextFormat(
+                    PCWSTR(font_name_wide.as_ptr()),
+                    None,
+                    DWRITE_FONT_WEIGHT_NORMAL,
+                    DWRITE_FONT_STYLE_NORMAL,
+                    DWRITE_FONT_STRETCH_NORMAL,
+                    font_size,
+                    w!("en-US"),
+                )
+                .expect("Failed to create IDWriteTextFormat");
+            format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER).ok();
+            format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER).ok();
+            TextFormatState { factory, format }
+        });
+    }
+
+    fn state() -> &'static TextFormatState {
+        TEXT_FORMAT.get().expect("TextPart::init must be called before use")
+    }
+
+    fn measure_text(wide: &Vec<u16>) -> Result<(f32, f32)> {
+        let s = Self::state();
+        let measure_layout = unsafe { s.factory.CreateTextLayout(wide, &s.format, f32::MAX, f32::MAX)? };
         let mut metrics = DWRITE_TEXT_METRICS::default();
         unsafe { measure_layout.GetMetrics(&mut metrics)? };
         Ok((metrics.width, metrics.height))
@@ -28,16 +60,17 @@ impl TextPart {
 
     pub fn with_color(
         text: &str,
-        dwrite_factory: &IDWriteFactory,
-        text_format: &IDWriteTextFormat,
         color: Common::D2D1_COLOR_F,
+        padding: Option<Padding>
     ) -> Result<Box<dyn Renderable>> {
+        let s = Self::state();
         let wide: Vec<u16> = text.encode_utf16().collect();
-        let (text_width, text_height) = Self::measure_text(&wide, dwrite_factory, text_format)?;
-        let layout = unsafe { dwrite_factory.CreateTextLayout(&wide, text_format, text_width, text_height)? };
+        let (text_width, text_height) = Self::measure_text(&wide)?;
+        let layout = unsafe { s.factory.CreateTextLayout(&wide, &s.format, text_width, text_height)? };
         Ok(Box::new(Self {
             base: PartBase {
                 color: Some(color),
+                padding: padding.unwrap_or_default(),
                 ..PartBase::new()
             },
             text: text.to_string(),

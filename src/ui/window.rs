@@ -2,7 +2,7 @@
 use crate::ui::accent;
 use crate::ui::animation::{AnimationPhase, AnimationState};
 use crate::monitor::caret;
-use crate::ui::parts::{Container, Part, Renderable, TextPart};
+use crate::ui::parts::{Container, Padding, Part, Renderable, TextPart};
 use crate::ui::renderer::UiRenderer;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -10,7 +10,6 @@ use windows::core::*;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 use windows::Win32::Graphics::Direct2D::*;
-use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::Graphics::Dwm::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::*;
@@ -26,9 +25,7 @@ const WM_USER_TICK: u32 = WM_USER + 3;
 #[derive(Clone)]
 pub struct OverlayWindow {
     pub hwnd: HWND,
-    pub dwrite_factory: IDWriteFactory,
     pub renderer: Arc<Mutex<UiRenderer>>,
-    pub text_format: IDWriteTextFormat,
     pub renderable: Arc<Mutex<Container>>,
     pub current_status: Arc<Mutex<ImeStatus>>,
     pub animation: Arc<Mutex<AnimationState>>,
@@ -76,31 +73,13 @@ impl OverlayWindow {
             RegisterClassW(&wc);
 
             let d2d_factory: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
-            let dwrite_factory: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
 
-            let text_format = dwrite_factory.CreateTextFormat(
-                w!("Segoe UI Variable Text"),
-                None,
-                DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                16.0,
-                w!("en-US"),
-            )?;
-
-            text_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
-            text_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
-
-            let initial_container = Container::empty();
-            let initial_width = initial_container.outer_width().ceil() as i32;
-            let initial_height = initial_container.outer_height().ceil() as i32;
+            TextPart::init("Segoe UI Variable Text", 16.0);
 
             let overlay = Arc::new(Self {
                 hwnd: HWND::default(),
-                dwrite_factory: dwrite_factory.clone(),
                 renderer: Arc::new(Mutex::new(UiRenderer::new(d2d_factory))),
-                text_format: text_format.clone(),
-                renderable: Arc::new(Mutex::new(initial_container)),
+                renderable: Arc::new(Mutex::new(Container::empty())),
                 current_status: Arc::new(Mutex::new(ImeStatus::default())),
                 animation: Arc::new(Mutex::new(AnimationState::new())),
                 last_state: Arc::new(Mutex::new(LastWindowState::new())),
@@ -114,8 +93,8 @@ impl OverlayWindow {
                 WS_POPUP,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
-                initial_width,
-                initial_height,
+                0,
+                0,
                 None,
                 None,
                 Some(instance.into()),
