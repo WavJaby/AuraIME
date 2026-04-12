@@ -2,13 +2,13 @@ use std::cell::RefCell;
 use windows::core::*;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::ClientToScreen;
-use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::Ole::{SafeArrayAccessData, SafeArrayGetLBound, SafeArrayGetUBound, SafeArrayUnaccessData};
 use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::Accessibility::{
-    AccessibleObjectFromWindow, CUIAutomation, IAccessible, IUIAutomation, IUIAutomationTextPattern,
-    IUIAutomationTextPattern2, IUIAutomationTextRange, TextUnit_Character, UIA_TextPattern2Id,
-    UIA_TextPatternId,
+    AccessibleObjectFromWindow, CUIAutomation, IAccessible, IUIAutomation, IUIAutomationElement,
+    IUIAutomationTextPattern, IUIAutomationTextPattern2, IUIAutomationTextRange, TextUnit_Character,
+    UIA_TextPattern2Id, UIA_TextPatternId,
 };
 use windows::Win32::UI::Input::Ime::{
     ImmGetCompositionWindow, ImmGetContext, ImmReleaseContext, CFS_POINT, COMPOSITIONFORM,
@@ -24,7 +24,8 @@ pub fn get_uia_instance() -> Option<IUIAutomation> {
         let mut uia_ref = uia.borrow_mut();
         if uia_ref.is_none() {
             unsafe {
-                if let Ok(instance) = CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) {
+                let result = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
+                if result && let Ok(instance) = CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) {
                     *uia_ref = Some(instance);
                 } else {
                     log::error!("Failed to create CUIAutomation.");
@@ -40,40 +41,32 @@ pub fn get_caret_rect_from_uia(hwnd: HWND) -> Option<RECT> {
         let uia = get_uia_instance()?;
 
         // Try focused element first, then fall back to ElementFromHandle
-        let element = uia.GetFocusedElement().or_else(|_| uia.ElementFromHandle(hwnd));
-        let element = match element {
-            Ok(v) => v,
-            Err(_) => return None,
-        };
+        let element = uia.GetFocusedElement().or_else(|_| uia.ElementFromHandle(hwnd)).ok()?;
 
         // Try TextPattern2 for GetCaretRange
-        if let Ok(pat_obj) = element.GetCurrentPattern(UIA_TextPattern2Id) {
-            if let Ok(pattern2) = pat_obj.cast::<IUIAutomationTextPattern2>() {
-                let mut is_active = BOOL(0);
-                if let Ok(range) = pattern2.GetCaretRange(&mut is_active) {
-                    if let Some(rect) = rect_from_text_range(&range) {
-                        return Some(rect);
-                    }
-                }
-            }
-        }
+        let rect = try_caret_range(&element).or_else(|| try_selection_range(&element));
+        rect
+    }
+}
 
-        // Fallback: TextPattern GetSelection
-        if let Ok(pat_obj) = element.GetCurrentPattern(UIA_TextPatternId) {
-            if let Ok(pattern1) = pat_obj.cast::<IUIAutomationTextPattern>() {
-                if let Ok(ranges) = pattern1.GetSelection() {
-                    if ranges.Length().unwrap_or(0) > 0 {
-                        if let Ok(range) = ranges.GetElement(0) {
-                            if let Some(rect) = rect_from_text_range(&range) {
-                                return Some(rect);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+fn try_caret_range(element: &IUIAutomationElement) -> Option<RECT> {
+    unsafe {
+        let pattern2: IUIAutomationTextPattern2 = element.GetCurrentPattern(UIA_TextPattern2Id).ok()?.cast().ok()?;
+        let mut is_active = BOOL(0);
+        let range = pattern2.GetCaretRange(&mut is_active).ok()?;
+        rect_from_text_range(&range)
+    }
+}
 
-        None
+fn try_selection_range(element: &IUIAutomationElement) -> Option<RECT> {
+    unsafe {
+        let pattern1: IUIAutomationTextPattern = element.GetCurrentPattern(UIA_TextPatternId).ok()?.cast().ok()?;
+        let ranges = pattern1.GetSelection().ok()?;
+        if ranges.Length().unwrap_or(0) == 0 {
+            return None;
+        }
+        let range = ranges.GetElement(0).ok()?;
+        rect_from_text_range(&range)
     }
 }
 
