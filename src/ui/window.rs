@@ -367,14 +367,17 @@ impl OverlayWindow {
             },
             WM_PAINT => match Self::get_overlay(hwnd) {
                 Some(overlay) => overlay.on_paint(),
-                None => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+                None => {
+                    let mut ps = PAINTSTRUCT::default();
+                    unsafe { BeginPaint(hwnd, &mut ps) };
+                    let _ = unsafe { EndPaint(hwnd, &ps) };
+                    LRESULT(0)
+                },
             },
-            WM_SIZE => {
-                if let Some(overlay) = Self::get_overlay(hwnd) {
-                    overlay.on_size(lparam);
-                }
-                LRESULT(0)
-            }
+            WM_SIZE => match Self::get_overlay(hwnd) {
+                Some(overlay) => overlay.on_size(lparam),
+                None => LRESULT(0),
+            },
             WM_NCDESTROY => Self::on_ncdestroy(hwnd),
             WM_DESTROY => {
                 unsafe { PostQuitMessage(0) };
