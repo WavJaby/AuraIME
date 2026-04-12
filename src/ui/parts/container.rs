@@ -1,4 +1,4 @@
-use super::part_trait::{Part, PartBase};
+use super::part_trait::{Border, Padding, Part, PartBase};
 use super::render::Renderable;
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
@@ -21,11 +21,9 @@ impl Container {
             base: PartBase {
                 bg_color: None,
                 color: None,
-                border_color: None,
-                radius: None,
+                border: Border::default(),
                 childs,
-                pad_x,
-                pad_y,
+                padding: Padding::symmetric(pad_x, pad_y),
             },
             gap,
         }
@@ -44,11 +42,9 @@ impl Container {
             base: PartBase {
                 bg_color: Some(bg_color),
                 color: None,
-                border_color: Some(border_color),
-                radius: Some(radius),
+                border: Border::new(border_color, radius),
                 childs,
-                pad_x,
-                pad_y,
+                padding: Padding::symmetric(pad_x, pad_y),
             },
             gap,
         })
@@ -80,7 +76,7 @@ impl Renderable for Container {
             right: origin_x + self.outer_width(),
             bottom: origin_y + self.outer_height(),
         };
-        let radius = self.base.radius.unwrap_or(0.0);
+        let radius = self.base.border.radius;
         let rounded = D2D1_ROUNDED_RECT {
             rect: bg_rect,
             radiusX: radius,
@@ -92,7 +88,8 @@ impl Renderable for Container {
             }
             if let Some(brush) = self
                 .base
-                .border_color
+                .border
+                .color
                 .and_then(|c| rt.CreateSolidColorBrush(&c, None).ok())
             {
                 rt.DrawRoundedRectangle(&rounded, &brush, 0.5, None);
@@ -101,12 +98,12 @@ impl Renderable for Container {
 
         let container_height = self.content_height();
 
-        let mut x_offset = self.base.pad_x;
+        let mut x_offset = self.base.padding.left;
         for child in &self.base.childs {
             let child_height = child.outer_height();
             let y_offset = (container_height - child_height) / 2.0;
 
-            child.render(rt, origin_x + x_offset, origin_y + y_offset + self.base.pad_y);
+            child.render(rt, origin_x + x_offset, origin_y + y_offset + self.base.padding.top);
             x_offset += child.outer_width() + self.gap;
         }
     }

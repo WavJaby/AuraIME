@@ -19,12 +19,8 @@ impl Part for Box<dyn Renderable> {
         (**self).content_height()
     }
 
-    fn padding_x(&self) -> f32 {
-        (**self).padding_x()
-    }
-
-    fn padding_y(&self) -> f32 {
-        (**self).padding_y()
+    fn padding(&self) -> super::part_trait::Padding {
+        (**self).padding()
     }
 }
 
