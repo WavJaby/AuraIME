@@ -4,6 +4,7 @@ use crate::ui::accent;
 use crate::ui::animation::{AnimationPhase, AnimationState};
 use crate::ui::parts::{Container, Padding, Part, Renderable, TextPart};
 use crate::ui::renderer::UiRenderer;
+use crate::ui::window_helper::{get_monitor_work_area, get_window_dpi_scale, set_window_pos_topmost};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use windows::core::*;
@@ -18,7 +19,6 @@ use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::Input::Ime::IME_CMODE_NATIVE;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-const WM_USER_UPDATE_POSITION: u32 = WM_USER + 1;
 const WM_USER_SHOW_AND_FADE: u32 = WM_USER + 2;
 const WM_USER_TICK: u32 = WM_USER + 3;
 
@@ -229,10 +229,10 @@ impl OverlayWindow {
     }
 
     pub fn resize_to_content(&self) -> Result<()> {
-        let r = self.renderable.lock().unwrap();
-        let total_width = r.outer_width();
-        let total_height = r.outer_height();
-        drop(r);
+        let (total_width, total_height) = {
+            let elements = self.renderable.lock().unwrap();
+            (elements.outer_width().ceil() as i32, elements.outer_height().ceil() as i32)
+        };
 
         let _ = unsafe {
             SetWindowPos(
@@ -240,83 +240,71 @@ impl OverlayWindow {
                 None,
                 0,
                 0,
-                total_width.ceil() as i32,
-                total_height.ceil() as i32,
+                total_width,
+                total_height,
                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW,
             )
         };
         Ok(())
     }
 
-    fn update_position(&self, hwnd: HWND) -> LRESULT {
-        let caret_rect = caret::get_caret_rect(hwnd);
+    fn update_position(&self) -> Result<()> {
+        let caret_info = caret::get_caret_rect(self.hwnd);
 
-        let r = self.renderable.lock().unwrap();
-        let total_width = r.outer_width();
-        let total_height = r.outer_height();
-        drop(r);
-
-        let mut last = self.last_state.lock().unwrap();
-        if let Some(rect) = caret_rect {
-            if rect != last.caret_rect {
-                last.caret_rect = rect;
-            }
-        }
-
-        let t = {
-            let anim = self.animation.lock().unwrap();
-            anim.get_time()
+        // Calculate total size of elements
+        let (total_width, total_height) = {
+            let elements = self.renderable.lock().unwrap();
+            (elements.outer_width().ceil() as i32, elements.outer_height().ceil() as i32)
         };
 
-        unsafe {
-            // Update window transparency, fades in/out
-            let alpha = (t * 255.0) as u8;
-            if last.alpha != alpha {
-                let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA);
-                last.alpha = alpha;
-            }
+        // Animation time
+        let t = self.animation.lock().unwrap().get_time();
 
-            // Slide in/out animation
-            if last.caret_rect.left != 0 || last.caret_rect.top != 0 {
-                let dpi = GetDpiForWindow(hwnd);
-                let scale = dpi as f32 / 96.0;
-                let total_offset_y = 20f32;
-                let padding_x = 8f32;
-                let padding_y = 8f32;
-                let offset_y = (((total_offset_y + padding_y) - (t * total_offset_y)) * scale) as i32;
-
-                // Check if placing below caret would overflow the screen
-                let monitor = MonitorFromRect(&last.caret_rect, MONITOR_DEFAULTTONEAREST);
-                let mut monitor_info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
-                let _ = GetMonitorInfoW(monitor, &mut monitor_info);
-                let screen_left = monitor_info.rcWork.left;
-                let screen_right = monitor_info.rcWork.right;
-                let screen_bottom = monitor_info.rcWork.bottom;
-
-                // Clamp x to screen boundaries
-                let x_max = screen_right - total_width.ceil() as i32;
-                let x = (last.caret_rect.left + padding_x as i32).clamp(screen_left, x_max);
-
-                // Clamp y with offset, ensuring no overflow
-                let y_below_total = last.caret_rect.bottom + (total_height + total_offset_y).ceil() as i32;
-                let y_below = last.caret_rect.bottom + offset_y;
-                let above_fits = last.caret_rect.top - total_height.ceil() as i32 >= monitor_info.rcWork.top;
-                let y = if y_below_total > screen_bottom && above_fits {
-                    last.caret_rect.top - total_height.ceil() as i32 - offset_y
-                } else {
-                    y_below
-                };
-
-                if last.x != x || last.y != y {
-                    SetWindowPos(hwnd, Some(HWND_TOPMOST), x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE)
-                        .expect("SetWindowPos failed");
-                    last.x = x;
-                    last.y = y;
-                }
+        let mut last = self.last_state.lock().unwrap();
+        if let Some(info) = caret_info {
+            if info.rect != last.caret_rect {
+                last.caret_rect = info.rect;
             }
         }
-        drop(last);
-        LRESULT(0)
+
+        // Update window transparency, fades in/out
+        let alpha = (t * 255.0) as u8;
+        if last.alpha != alpha {
+            let _ = unsafe { SetLayeredWindowAttributes(self.hwnd, COLORREF(0), alpha, LWA_ALPHA) };
+            last.alpha = alpha;
+        }
+
+        // Slide in/out animation
+        let scale = get_window_dpi_scale(self.hwnd)?;
+        let total_offset_y = 20f32;
+        let padding_x = 8f32;
+        let padding_y = 8f32;
+        let offset_y = (((total_offset_y + padding_y) - (t * total_offset_y)) * scale) as i32;
+
+        // Check if placing below caret would overflow the screen
+        let screen = get_monitor_work_area(&last.caret_rect)?;
+
+        // Clamp x to screen boundaries
+        let x_max = screen.right - total_width;
+        let x = (last.caret_rect.left + padding_x as i32).clamp(screen.left, x_max);
+
+        // Clamp y with offset, ensuring no overflow
+        let y_below_total = last.caret_rect.bottom + total_height + total_offset_y as i32;
+        let y_below = last.caret_rect.bottom + offset_y;
+        let above_fits = last.caret_rect.top - total_height >= screen.top;
+        let y = if y_below_total > screen.bottom && above_fits {
+            last.caret_rect.top - total_height - offset_y
+        } else {
+            y_below
+        };
+
+        if last.x != x || last.y != y {
+            set_window_pos_topmost(self.hwnd, x, y)?;
+            last.x = x;
+            last.y = y;
+        }
+
+        Ok(())
     }
 
     fn on_create(hwnd: HWND, lparam: LPARAM) -> LRESULT {
@@ -331,58 +319,50 @@ impl OverlayWindow {
         LRESULT(0)
     }
 
-    fn start_vsync_thread(overlay: &OverlayWindow, hwnd: HWND) {
+    fn start_vsync_thread(&self) {
         // Only start a new vsync thread if isn't running
-        if !overlay.vsync_running.swap(true, Ordering::SeqCst) {
-            let running = overlay.vsync_running.clone();
-            let hwnd_raw = hwnd.0 as isize;
+        if !self.vsync_running.swap(true, Ordering::SeqCst) {
+            let running = self.vsync_running.clone();
+            let hwnd_raw = self.hwnd.0 as isize;
             std::thread::spawn(move || {
                 let hwnd = HWND(hwnd_raw as *mut core::ffi::c_void);
                 while running.load(Ordering::SeqCst) {
-                    unsafe {
-                        let _ = DwmFlush();
-                        let _ = PostMessageW(Some(hwnd), WM_USER_TICK, WPARAM(0), LPARAM(0));
-                    }
+                    let _ = unsafe { DwmFlush() };
+                    let _ = unsafe { PostMessageW(Some(hwnd), WM_USER_TICK, WPARAM(0), LPARAM(0)) };
                 }
             });
         }
     }
 
-    fn on_show_and_fade(hwnd: HWND) -> LRESULT {
-        unsafe {
-            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 0, LWA_ALPHA);
-            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-        }
+    fn on_show_and_fade(&self) -> LRESULT {
+        let _ = unsafe { SetLayeredWindowAttributes(self.hwnd, COLORREF(0), 0, LWA_ALPHA) };
+        let _ = unsafe { ShowWindow(self.hwnd, SW_SHOWNOACTIVATE) };
 
-        if let Some(overlay) = Self::get_overlay(hwnd) {
-            Self::start_vsync_thread(overlay, hwnd);
-        }
+        self.start_vsync_thread();
 
         LRESULT(0)
     }
 
-    fn on_paint(hwnd: HWND, overlay: &OverlayWindow) -> LRESULT {
+    fn on_paint(&self) -> LRESULT {
         log::debug!("WM_PAINT");
 
         let mut ps = PAINTSTRUCT::default();
-        let _hdc = unsafe { BeginPaint(hwnd, &mut ps) };
+        let _hdc = unsafe { BeginPaint(self.hwnd, &mut ps) };
 
         let mut rect = RECT::default();
-        let _ = unsafe { GetClientRect(hwnd, &mut rect) };
+        let _ = unsafe { GetClientRect(self.hwnd, &mut rect) };
         {
-            let mut renderer = overlay.renderer.lock().unwrap();
-            if let Err(e) = renderer.ensure_target(hwnd) {
+            let mut renderer = self.renderer.lock().unwrap();
+            if let Err(e) = renderer.ensure_target(self.hwnd) {
                 log::error!("Failed to create RenderTarget: {:?}", e);
             } else {
-                let status_lock = overlay.current_status.lock().unwrap();
-                let r = overlay.renderable.lock().unwrap();
+                let status_lock = self.current_status.lock().unwrap();
+                let r = self.renderable.lock().unwrap();
                 renderer.draw_frame(&status_lock, &*r);
             }
         }
 
-        unsafe {
-            let _ = EndPaint(hwnd, &ps);
-        }
+        let _ = unsafe { EndPaint(self.hwnd, &ps) };
         LRESULT(0)
     }
 
@@ -403,8 +383,8 @@ impl OverlayWindow {
         LRESULT(0)
     }
 
-    fn on_tick(&self, hwnd: HWND) -> LRESULT {
-        let _ = Self::update_position(self, hwnd);
+    fn on_tick(&self) -> LRESULT {
+        let _ = self.update_position();
 
         let phase = {
             let anim = self.animation.lock().unwrap();
@@ -418,9 +398,7 @@ impl OverlayWindow {
                 .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
                 .is_ok()
             {
-                unsafe {
-                    let _ = ShowWindow(hwnd, SW_HIDE);
-                }
+                let _ = unsafe { ShowWindow(self.hwnd, SW_HIDE) };
                 log::info!("Window hide");
             }
         }
@@ -438,22 +416,21 @@ impl OverlayWindow {
             WM_CREATE => Self::on_create(hwnd, lparam),
             // WM_NCACTIVATE => Self::on_nc_activate(hwnd, msg, wparam, lparam),
             // WM_ERASEBKGND => LRESULT(1),
-            WM_USER_UPDATE_POSITION => match Self::get_overlay(hwnd) {
-                Some(overlay) => Self::update_position(overlay, hwnd),
+            WM_USER_SHOW_AND_FADE => match Self::get_overlay(hwnd) {
+                Some(overlay) => overlay.on_show_and_fade(),
                 None => LRESULT(0),
             },
-            WM_USER_SHOW_AND_FADE => Self::on_show_and_fade(hwnd),
             WM_USER_TICK => match Self::get_overlay(hwnd) {
-                Some(overlay) => Self::on_tick(overlay, hwnd),
+                Some(overlay) => overlay.on_tick(),
                 None => LRESULT(0),
             },
             WM_PAINT => match Self::get_overlay(hwnd) {
-                Some(overlay) => Self::on_paint(hwnd, overlay),
+                Some(overlay) => overlay.on_paint(),
                 None => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
             },
             WM_SIZE => {
                 if let Some(overlay) = Self::get_overlay(hwnd) {
-                    Self::on_size(overlay, lparam);
+                    overlay.on_size(lparam);
                 }
                 LRESULT(0)
             }
