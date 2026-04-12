@@ -1,7 +1,7 @@
 ﻿use crate::ime::ImeStatus;
+use crate::monitor::caret;
 use crate::ui::accent;
 use crate::ui::animation::{AnimationPhase, AnimationState};
-use crate::monitor::caret;
 use crate::ui::parts::{Container, Padding, Part, Renderable, TextPart};
 use crate::ui::renderer::UiRenderer;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -183,39 +183,13 @@ impl OverlayWindow {
             None
         };
 
-        let mut current = self.current_status.lock().unwrap();
-        *current = status.clone();
-        drop(current);
-
-        {
-            let hwnd_target = HWND(status.hwnd as *mut _);
-            let mut last_state = self.last_state.lock().unwrap();
-            let same_hwnd = last_state.hwnd.0 == hwnd_target.0;
-            match caret::get_caret_rect(hwnd_target) {
-                Some(rect) => {
-                    last_state.caret_rect = rect;
-                    last_state.hwnd = hwnd_target;
-                }
-                None => {
-                    if !same_hwnd || last_state.caret_rect == RECT::default() {
-                        // Different text box or no previous position — fall back to cursor
-                        unsafe {
-                            let mut pt = POINT::default();
-                            let _ = GetCursorPos(&mut pt);
-                            last_state.caret_rect = RECT { left: pt.x, top: pt.y, right: pt.x, bottom: pt.y };
-                        }
-                    }
-                    // Same hwnd: UIA transiently failed (e.g. IME mode change) — keep old rect
-                    last_state.hwnd = hwnd_target;
-                }
-            }
-            drop(last_state);
-        }
+        let full_width = if status.full_width { Some("●") } else { None };
 
         let text_color = D2D1_COLOR_F { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
-        let mut childs: Vec<Box<dyn Renderable>> = Vec::with_capacity(2);
-        let base = TextPart::with_color(&status.display_name, &self.dwrite_factory, &self.text_format, text_color)?;
-        let base_container = Container::new_with_color(
+        let mut childs: Vec<Box<dyn Renderable>> = Vec::new();
+        // Add base name
+        let base = TextPart::with_color(&status.display_name, text_color, None)?;
+        childs.push(Container::new_with_color(
             vec![base],
             8.0,
             4.0,
@@ -223,12 +197,18 @@ impl OverlayWindow {
             8.0,
             D2D1_COLOR_F { r: 0.26, g: 0.26, b: 0.26, a: 0.2 },
             D2D1_COLOR_F { r: 1.0, g: 1.0, b: 1.0, a: 0.1 },
-        );
+        ));
 
-        childs.push(base_container);
+        // Add ime status indicator
         if let Some(ind) = indicator {
-            childs.push(TextPart::with_color(ind, &self.dwrite_factory, &self.text_format, text_color)?);
+            childs.push(TextPart::with_color(ind, text_color, None)?);
         }
+
+        // Add full width indicator
+        if let Some(full_width) = full_width {
+            childs.push(TextPart::with_color(full_width, text_color, Padding::bottom(4.0))?);
+        }
+
         *self.renderable.lock().unwrap() = Container::new(childs, 8.0, 8.0, 8.0);
 
         log::info!("Status updated to: {} {}", status.display_name, indicator.unwrap_or(""));
