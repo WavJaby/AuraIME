@@ -1,10 +1,13 @@
 ﻿use crate::ime::ImeStatus;
 use crate::monitor::caret;
-use crate::ui::accent::{set_accent_policy, set_dwm_attribute, setup_modern_look};
+use crate::ui::accent::setup_modern_look;
 use crate::ui::animation::{AnimationPhase, AnimationState};
 use crate::ui::parts::{Container, Padding, Part, Renderable, TextPart};
 use crate::ui::renderer::UiRenderer;
-use crate::ui::window_helper::{get_monitor_work_area, get_window_dpi_scale, set_window_pos_topmost};
+use crate::ui::window_helper::{
+    get_monitor_work_area, get_window_dpi_scale, init_window, post_window_message, set_window_pos_topmost,
+    set_window_size,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use windows::core::*;
@@ -13,9 +16,6 @@ use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::Dwm::*;
 use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::System::LibraryLoader::*;
-use windows::Win32::UI::Controls::*;
-use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::Input::Ime::IME_CMODE_NATIVE;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -57,7 +57,7 @@ impl OverlayWindow {
 
         let d2d_factory: ID2D1Factory = unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)? };
 
-            TextPart::init("Segoe UI Variable Text", 16.0);
+        TextPart::init("Segoe UI Variable Text", 16.0);
 
         let overlay = Arc::new(Self {
             hwnd: HWND::default(),
@@ -108,7 +108,7 @@ impl OverlayWindow {
         let skip_fade_in = anim_lock.on_activity();
         if !skip_fade_in {
             log::info!("Caret moved, showing window.");
-            let _ = unsafe { PostMessageW(Some(self.hwnd), WM_USER_SHOW_AND_FADE, WPARAM(0), LPARAM(0)) };
+            post_window_message(self.hwnd, WM_USER_SHOW_AND_FADE)?;
         }
         drop(anim_lock);
 
@@ -167,14 +167,12 @@ impl OverlayWindow {
             let mut anim_lock = self.animation.lock().unwrap();
             let skip_fade_in = anim_lock.on_activity();
             if !skip_fade_in {
-                let _ = unsafe { PostMessageW(Some(self.hwnd), WM_USER_SHOW_AND_FADE, WPARAM(0), LPARAM(0)) };
+                post_window_message(self.hwnd, WM_USER_SHOW_AND_FADE)?;
             }
         }
 
-        unsafe {
-            self.resize_to_content()?;
-            let _ = InvalidateRect(Some(self.hwnd), None, true);
-        }
+        self.resize_to_content()?;
+        let _ = unsafe { InvalidateRect(Some(self.hwnd), None, true) };
 
         Ok(())
     }
@@ -269,7 +267,8 @@ impl OverlayWindow {
                 let hwnd = HWND(hwnd_raw as *mut core::ffi::c_void);
                 while running.load(Ordering::SeqCst) {
                     let _ = unsafe { DwmFlush() };
-                    let _ = unsafe { PostMessageW(Some(hwnd), WM_USER_TICK, WPARAM(0), LPARAM(0)) };
+                    post_window_message(hwnd, WM_USER_TICK)
+                        .unwrap_or_else(|e| log::error!("Failed to post WM_USER_TICK message: {:?}", e));
                 }
             });
         }
@@ -372,7 +371,7 @@ impl OverlayWindow {
                     unsafe { BeginPaint(hwnd, &mut ps) };
                     let _ = unsafe { EndPaint(hwnd, &ps) };
                     LRESULT(0)
-                },
+                }
             },
             WM_SIZE => match Self::get_overlay(hwnd) {
                 Some(overlay) => overlay.on_size(lparam),

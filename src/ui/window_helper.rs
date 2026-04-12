@@ -1,9 +1,13 @@
+use std::sync::Arc;
 use windows::core::Result;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForWindow, DPI_AWARENESS_PER_MONITOR_AWARE};
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows_core::Error;
+use windows_core::{Error, PCWSTR};
+use crate::ui::OverlayWindow;
+
 pub fn init_window(wnd_proc: WNDPROC, overlay: *const OverlayWindow, window_class: PCWSTR, window_name: PCWSTR) -> Result<HWND> {
     let instance = unsafe { GetModuleHandleW(None)?.into() };
 

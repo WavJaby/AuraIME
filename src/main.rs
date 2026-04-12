@@ -11,14 +11,12 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 fn main() -> Result<()> {
     simple_logger::init().unwrap();
-    unsafe { let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2); }
+    let _ = unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
 
     let (tx, rx) = mpsc::channel();
 
     // Initialize COM for the main thread
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-    }
+    let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
 
     let overlay_arc = ui::OverlayWindow::new()?;
     log::debug!("Overlay window created.");
