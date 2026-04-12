@@ -1,7 +1,4 @@
 use std::sync::mpsc::Sender;
-use windows::core::Interface;
-use windows::Win32::System::Com::*;
-use windows::Win32::UI::TextServices::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows_core::link;
 

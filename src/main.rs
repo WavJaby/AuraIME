@@ -10,6 +10,7 @@ use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CON
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 fn main() -> Result<()> {
+    simple_logger::init().unwrap();
     unsafe { let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2); }
 
     let (tx, rx) = mpsc::channel();
@@ -25,11 +26,6 @@ fn main() -> Result<()> {
     // Start monitoring in a background thread
     let tx_monitor = tx.clone();
     thread::spawn(move || {
-        // Explicitly initialize COM as STA in the background thread
-        unsafe {
-            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        }
-        
         if let Err(e) = monitor::run_monitor(tx_monitor) {
             log::error!("Monitor error: {:?}", e);
         }

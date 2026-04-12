@@ -58,6 +58,7 @@ impl PartBase {
     }
 }
 
+#[allow(dead_code)]
 pub trait Part {
     fn base(&self) -> &PartBase;
     fn childs(&self) -> &[Box<dyn Renderable>] {

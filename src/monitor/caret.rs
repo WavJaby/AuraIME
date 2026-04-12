@@ -214,7 +214,6 @@ pub fn get_caret_rect(hwnd: HWND) -> Option<RECT> {
             //     RECT { left: pt.x, top: pt.y, right: pt_bottom.x, bottom: pt_bottom.y }
             // );
 
-            let w = pt_bottom.x - pt.x;
             let h = pt_bottom.y - pt.y;
             if h < 5 {
                 pt_bottom.y += 16;

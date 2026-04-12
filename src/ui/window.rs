@@ -33,6 +33,7 @@ pub struct OverlayWindow {
     pub vsync_running: Arc<AtomicBool>,
 }
 
+#[allow(dead_code)]
 pub struct LastWindowState {
     pub alpha: u8,
     pub x: i32,
@@ -61,6 +62,7 @@ impl OverlayWindow {
         unsafe {
             let instance = GetModuleHandleW(None)?;
             let window_class = w!("AuraIME_Overlay");
+            let window_name = w!("AuraIME");
 
             let wc = WNDCLASSW {
                 lpfnWndProc: Some(Self::wnd_proc),
@@ -89,7 +91,7 @@ impl OverlayWindow {
             let hwnd = CreateWindowExW(
                 WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
                 window_class,
-                w!("AuraIME"),
+                window_name,
                 WS_POPUP,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
@@ -135,6 +137,7 @@ impl OverlayWindow {
         set_dwm_attribute(hwnd, DWMWA_EXCLUDED_FROM_PEEK, &BOOL(1));
     }
 
+    #[allow(dead_code)]
     pub fn move_to_caret(&self, rect: RECT) -> Result<()> {
         let changed = {
             let mut last_state = self.last_state.lock().unwrap();
@@ -228,6 +231,7 @@ impl OverlayWindow {
         }
         *self.renderable.lock().unwrap() = Container::new(childs, 8.0, 8.0, 8.0);
 
+        log::info!("Status updated to: {} {}", status.display_name, indicator.unwrap_or(""));
         {
             let mut anim_lock = self.animation.lock().unwrap();
             let skip_fade_in = anim_lock.on_activity();

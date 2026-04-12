@@ -66,6 +66,8 @@ pub(super) fn get_locate_keyboard_install(lang_id: u16) -> Option<KeyboardLayout
     }
 }
 
+
+#[allow(dead_code)]
 pub(super) struct LanguageInfo {
     pub main: u16,
     pub sub: u16,
