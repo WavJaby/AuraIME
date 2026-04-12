@@ -4,6 +4,39 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::HiDpi::{GetDpiForWindow, DPI_AWARENESS_PER_MONITOR_AWARE};
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows_core::Error;
+pub fn init_window(wnd_proc: WNDPROC, overlay: *const OverlayWindow, window_class: PCWSTR, window_name: PCWSTR) -> Result<HWND> {
+    let instance = unsafe { GetModuleHandleW(None)?.into() };
+
+    let wc = WNDCLASSW {
+        lpfnWndProc: wnd_proc,
+        hInstance: instance,
+        lpszClassName: window_class,
+        lpszMenuName: window_name,
+        hbrBackground: HBRUSH::default(),
+        ..Default::default()
+    };
+
+    if unsafe { RegisterClassW(&wc) } == 0 {
+        return Err(Error::from_thread());
+    }
+
+    unsafe {
+        Ok(CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TRANSPARENT,
+            window_class,
+            window_name,
+            WS_POPUP,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            0,
+            0,
+            None,
+            None,
+            Some(instance),
+            Some(overlay as *const _),
+        )?)
+    }
+}
 
 pub fn get_monitor_work_area(rect: &RECT) -> Result<RECT> {
     unsafe {

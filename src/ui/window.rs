@@ -59,22 +59,10 @@ fn set_dwm_attribute<T>(hwnd: HWND, attribute: DWMWINDOWATTRIBUTE, value: &T) {
 
 impl OverlayWindow {
     pub fn new() -> Result<Arc<Self>> {
-        unsafe {
-            let instance = GetModuleHandleW(None)?;
-            let window_class = w!("AuraIME_Overlay");
-            let window_name = w!("AuraIME");
+        let window_class = w!("AuraIME_Overlay");
+        let window_name = w!("AuraIME");
 
-            let wc = WNDCLASSW {
-                lpfnWndProc: Some(Self::wnd_proc),
-                hInstance: instance.into(),
-                lpszClassName: window_class,
-                hbrBackground: HBRUSH::default(),
-                ..Default::default()
-            };
-
-            RegisterClassW(&wc);
-
-            let d2d_factory: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
+        let d2d_factory: ID2D1Factory = unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)? };
 
             TextPart::init("Segoe UI Variable Text", 16.0);
 
@@ -88,25 +76,23 @@ impl OverlayWindow {
                 vsync_running: Arc::new(AtomicBool::new(false)),
             });
 
-            let hwnd = CreateWindowExW(
-                WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
-                window_class,
-                window_name,
-                WS_POPUP,
-                CW_USEDEFAULT,
-                CW_USEDEFAULT,
-                0,
-                0,
-                None,
-                None,
-                Some(instance.into()),
-                Some(Arc::as_ptr(&overlay) as *const _),
-            )?;
+        let hwnd = match init_window(Some(Self::wnd_proc), Arc::as_ptr(&overlay), window_class, window_name) {
+            Ok(hwnd) => hwnd,
+            Err(e) => {
+                log::error!("Failed to create window: {:?}", e);
+                return Err(e);
+            }
+        };
 
-            Self::setup_modern_look(hwnd);
+        match setup_modern_look(hwnd) {
+            Ok(_) => {}
+            Err(e) => {
+                log::error!("Failed to setup modern look: {:?}", e);
+                return Err(e);
+            }
+        };
 
-            Ok(overlay)
-        }
+        Ok(overlay)
     }
 
     pub fn setup_modern_look(hwnd: HWND) {
