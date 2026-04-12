@@ -26,8 +26,8 @@ pub fn get_uia_instance() -> Option<IUIAutomation> {
             unsafe {
                 if let Ok(instance) = CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) {
                     *uia_ref = Some(instance);
-                }else {
-                    eprintln!("[caret] Failed to create CUIAutomation.");
+                } else {
+                    log::error!("Failed to create CUIAutomation.");
                 }
             }
         }

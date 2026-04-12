@@ -147,7 +147,7 @@ pub fn is_chromium_input_focused(hwnd: HWND) -> bool {
 
         if LAST_CONTROL_TYPE != Some(control_type) {
             LAST_CONTROL_TYPE = Some(control_type);
-            println!("[IME] Control type: {:?}", control_type);
+            log::debug!("Control type: {:?}", control_type);
         }
 
         let readonly = uia_is_readonly(&element);
@@ -234,9 +234,17 @@ pub fn get_status_from_hwnd(hwnd: HWND) -> Option<ImeStatus> {
 
         let cjk_lang = is_cjk_lang(lang_info.main);
 
-        println!(
-            "[IME] State changed - hwnd: {:?},hkl: {:08X}, name: {},  is_open: {}, mode: {:x}, cjk_lang: {}, has_caret: {}",
-            hwnd, hkl.0 as usize, status_name, is_open, conv_val, cjk_lang, has_caret
+        let full_width = conv_mode & 0x8 != 0;
+
+        log::debug!(
+            "State changed - hwnd: {:?}, hkl: {:08X}, name: {}, is_open: {}, mode: {:x}, cjk_lang: {}, has_caret: {}",
+            hwnd,
+            hkl.0 as usize,
+            status_name,
+            is_open,
+            conv_mode,
+            cjk_lang,
+            has_caret
         );
 
         Some(ImeStatus {

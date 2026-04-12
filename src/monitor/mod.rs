@@ -16,7 +16,7 @@ link!("msctf.dll" "system" fn TF_CreateInputProcessorProfiles(ppipp: *mut *mut s
 
 pub fn run_monitor(tx: Sender<MonitorEvent>) -> windows::core::Result<()> {
     unsafe {
-        println!("[Monitor] Entering Message Loop.");
+        log::info!("Entering Message Loop.");
         let mut msg = MSG::default();
 
         loop {
@@ -35,8 +35,8 @@ pub fn run_monitor(tx: Sender<MonitorEvent>) -> windows::core::Result<()> {
             if !hwnd.is_invalid() {
                 if let Some(status) = crate::ime::get_status_from_hwnd(hwnd) {
                     match tx.send(MonitorEvent::StatusChanged(status)) {
-                        Ok(_) => {},
-                        Err(e) => eprintln!("[Monitor] Failed to send StatusChanged event: {:?}", e),
+                        Ok(_) => {}
+                        Err(e) => log::error!("Failed to send StatusChanged event: {:?}", e),
                     }
                 }
             }

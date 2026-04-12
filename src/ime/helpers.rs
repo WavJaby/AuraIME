@@ -14,10 +14,7 @@ pub(super) fn get_imm_description(hkl: HKL) -> Option<String> {
     let mut buffer = [0u16; 128];
     let len = unsafe { ImmGetDescriptionW(hkl.clone(), Some(&mut buffer)) };
     if len > 0 {
-        println!(
-            "[IME] ImmGetDescriptionW: {:?}",
-            String::from_utf16_lossy(&buffer[..len as usize])
-        );
+        log::debug!("ImmGetDescriptionW: {:?}", String::from_utf16_lossy(&buffer[..len as usize]));
         Some(String::from_utf16_lossy(&buffer[..len as usize]))
     } else {
         None
@@ -137,7 +134,7 @@ pub(super) fn get_keyboard_layout_name_from_registry(hkl: HKL) -> Option<String>
                 let str = String::from_utf16_lossy(&out_buffer)
                     .trim_matches(char::from(0))
                     .to_string();
-                println!("[IME] Found layout display name: {}", &str);
+                log::info!("Found layout display name: {}", &str);
                 result = Some(str);
             }
         }
@@ -193,9 +190,9 @@ pub(super) fn debug_locale_info(lang_id: u32) {
             let len = unsafe { GetLocaleInfoW(lang_id, $lctype, Some(&mut buffer)) };
             if len > 0 {
                 let result = String::from_utf16_lossy(&buffer[..(len - 1) as usize]);
-                println!("[IME] {:?}: {:?}", stringify!($lctype), result);
+                log::debug!("{:?}: {:?}", stringify!($lctype), result);
             } else {
-                println!("[IME] {:?}: Failed", stringify!($lctype));
+                log::debug!("{:?}: Failed", stringify!($lctype));
             }
         };
     }

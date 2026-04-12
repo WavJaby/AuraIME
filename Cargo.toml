@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+log = "0.4"
+simple_logger = { version = "5", features = ["colors"] }
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_UI_TextServices",

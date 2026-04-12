@@ -26,7 +26,7 @@ impl UiRenderer {
         let width = (rect.right - rect.left) as u32;
         let height = (rect.bottom - rect.top) as u32;
 
-        println!("[UI] Creating RenderTarget for hwnd: {:?}, size: {}x{}", hwnd, width, height);
+        log::info!("Creating RenderTarget for hwnd: {:?}, size: {}x{}", hwnd, width, height);
 
         let props = D2D1_RENDER_TARGET_PROPERTIES {
             r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
@@ -47,7 +47,7 @@ impl UiRenderer {
 
         let rt = unsafe { self.d2d_factory.CreateHwndRenderTarget(&props, &hwnd_props)? };
         self.render_target = Some(rt);
-        println!("[UI] RenderTarget created for hwnd: {:?}", hwnd);
+        log::info!("RenderTarget created for hwnd: {:?}", hwnd);
         Ok(())
     }
 
@@ -65,10 +65,10 @@ impl UiRenderer {
         row.render(rt, 0.0, 0.0);
 
         if let Err(e) = unsafe { rt.EndDraw(None, None) } {
-            println!("[UI] EndDraw error: {:?}", e);
+            log::error!("EndDraw error: {:?}", e);
             self.discard_resources();
         } else {
-            println!("[UI] EndDraw");
+            log::debug!("EndDraw");
         }
     }
 

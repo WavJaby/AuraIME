@@ -174,7 +174,7 @@ impl OverlayWindow {
         let mut anim_lock = self.animation.lock().unwrap();
         let skip_fade_in = anim_lock.on_activity();
         if !skip_fade_in {
-            println!("[UI] Caret moved, showing window.");
+            log::info!("Caret moved, showing window.");
             let _ = unsafe { PostMessageW(Some(self.hwnd), WM_USER_SHOW_AND_FADE, WPARAM(0), LPARAM(0)) };
         }
         drop(anim_lock);
@@ -257,11 +257,9 @@ impl OverlayWindow {
             }
         }
 
-        println!("[UI] Status updated to: {} {}", status.display_name, indicator.unwrap_or(""));
         unsafe {
             self.resize_to_content()?;
             let _ = InvalidateRect(Some(self.hwnd), None, true);
-            println!("[UI] InvalidateRect");
         }
 
         Ok(())
@@ -359,7 +357,7 @@ impl OverlayWindow {
     }
 
     fn on_create(hwnd: HWND, lparam: LPARAM) -> LRESULT {
-        println!("[UI] WM_CREATE");
+        log::debug!("WM_CREATE");
         let create_struct = lparam.0 as *const CREATESTRUCTW;
         let overlay_ptr = unsafe { (*create_struct).lpCreateParams as *mut OverlayWindow };
 
@@ -401,7 +399,7 @@ impl OverlayWindow {
     }
 
     fn on_paint(hwnd: HWND, overlay: &OverlayWindow) -> LRESULT {
-        println!("[UI] WM_PAINT");
+        log::debug!("WM_PAINT");
 
         let mut ps = PAINTSTRUCT::default();
         let _hdc = unsafe { BeginPaint(hwnd, &mut ps) };
@@ -411,7 +409,7 @@ impl OverlayWindow {
         {
             let mut renderer = overlay.renderer.lock().unwrap();
             if let Err(e) = renderer.ensure_target(hwnd) {
-                println!("[UI] Failed to create RenderTarget: {:?}", e);
+                log::error!("Failed to create RenderTarget: {:?}", e);
             } else {
                 let status_lock = overlay.current_status.lock().unwrap();
                 let r = overlay.renderable.lock().unwrap();
@@ -457,10 +455,10 @@ impl OverlayWindow {
                 .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
                 .is_ok()
             {
-                println!("[UI] Animation finished, hiding window");
                 unsafe {
                     let _ = ShowWindow(hwnd, SW_HIDE);
                 }
+                log::info!("Window hide");
             }
         }
         LRESULT(0)
