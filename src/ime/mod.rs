@@ -23,12 +23,13 @@ pub struct ImeStatus {
     pub conv_mode: u32,
     pub cjk_lang: bool,
     pub lang_id: u16,
+    pub full_width: bool,
 }
 
 #[derive(Default, PartialEq, Eq)]
 struct LastImeState {
     hwnd: isize,
-    hkl: usize,
+    hkl: u32,
     is_open: bool,
     conv_mode: u32,
     has_caret: bool,
@@ -39,17 +40,22 @@ static LAST_STATE: Mutex<LastImeState> =
 
 fn update_ime_status(hwnd: HWND, hkl: HKL, is_open: bool, conv_mode: u32, has_caret: bool) -> bool {
     let mut last_state = LAST_STATE.lock().unwrap();
+    let hkl_val = (hkl.0 as usize & 0xFFFFFFFF) as u32;
     let hwnd_isize = hwnd.0 as isize;
+
     if last_state.hwnd == hwnd_isize
-        && last_state.hkl == hkl.0 as usize
+        && last_state.hkl == hkl_val
         && last_state.is_open == is_open
         && last_state.conv_mode == conv_mode
         && last_state.has_caret == has_caret
     {
         return false;
     }
-    *last_state = LastImeState { hwnd: hwnd_isize, hkl: hkl.0 as usize, is_open, conv_mode, has_caret };
-    true
+    let is_eng = hkl_val == 0x04090409 && last_state.hkl == hkl_val;
+
+    *last_state = LastImeState { hwnd: hwnd_isize, hkl: hkl_val, is_open, conv_mode, has_caret };
+
+    !is_eng
 }
 
 fn is_cjk_lang(lang_id: u16) -> bool {
@@ -168,11 +174,9 @@ pub fn is_chromium_input_focused(hwnd: HWND) -> bool {
                 // Document block (Document) -> <body> or <main> of web page
                 !readonly && has_text_pattern
             }
-            
+
             // Group or Panel (Group, Pane, etc.) -> custom input box <div>
-            _ => {
-                has_text_pattern
-            }
+            _ => has_text_pattern,
         }
     }
 }
@@ -214,17 +218,15 @@ pub fn get_status_from_hwnd(hwnd: HWND) -> Option<ImeStatus> {
         }
 
         if !ime_hwnd.is_invalid() {
-            conv_mode = helpers::get_conv_mode(ime_hwnd);
+            conv_mode = helpers::get_conv_mode(ime_hwnd).0;
             is_open = helpers::get_open_status(ime_hwnd);
         } else {
-            conv_mode = IME_CONVERSION_MODE(0);
+            conv_mode = IME_CONVERSION_MODE(0).0;
             is_open = false;
         }
 
-        let conv_val = conv_mode.0;
-
         // Check if state changed
-        if !update_ime_status(hwnd, hkl, is_open, conv_val, has_caret) {
+        if !update_ime_status(hwnd, hkl, is_open, conv_mode, has_caret) {
             return None;
         }
 
@@ -252,7 +254,8 @@ pub fn get_status_from_hwnd(hwnd: HWND) -> Option<ImeStatus> {
             display_name: status_name,
             is_open,
             has_caret,
-            conv_mode: conv_val,
+            conv_mode,
+            full_width,
             cjk_lang,
             lang_id: lang_info.main,
         })
