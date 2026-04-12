@@ -1,6 +1,6 @@
 ﻿use crate::ime::ImeStatus;
 use crate::monitor::caret;
-use crate::ui::accent;
+use crate::ui::accent::{set_accent_policy, set_dwm_attribute, setup_modern_look};
 use crate::ui::animation::{AnimationPhase, AnimationState};
 use crate::ui::parts::{Container, Padding, Part, Renderable, TextPart};
 use crate::ui::renderer::UiRenderer;
@@ -22,14 +22,13 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 const WM_USER_SHOW_AND_FADE: u32 = WM_USER + 2;
 const WM_USER_TICK: u32 = WM_USER + 3;
 
-#[derive(Clone)]
 pub struct OverlayWindow {
     pub hwnd: HWND,
-    pub renderer: Arc<Mutex<UiRenderer>>,
-    pub renderable: Arc<Mutex<Container>>,
-    pub current_status: Arc<Mutex<ImeStatus>>,
-    pub animation: Arc<Mutex<AnimationState>>,
-    pub last_state: Arc<Mutex<LastWindowState>>,
+    pub renderer: Mutex<UiRenderer>,
+    pub renderable: Mutex<Container>,
+    pub current_status: Mutex<ImeStatus>,
+    pub animation: Mutex<AnimationState>,
+    pub last_state: Mutex<LastWindowState>,
     pub vsync_running: Arc<AtomicBool>,
 }
 
@@ -51,12 +50,6 @@ impl LastWindowState {
 unsafe impl Send for OverlayWindow {}
 unsafe impl Sync for OverlayWindow {}
 
-fn set_dwm_attribute<T>(hwnd: HWND, attribute: DWMWINDOWATTRIBUTE, value: &T) {
-    unsafe {
-        let _ = DwmSetWindowAttribute(hwnd, attribute, value as *const T as *const _, size_of::<T>() as u32);
-    }
-}
-
 impl OverlayWindow {
     pub fn new() -> Result<Arc<Self>> {
         let window_class = w!("AuraIME_Overlay");
@@ -66,15 +59,15 @@ impl OverlayWindow {
 
             TextPart::init("Segoe UI Variable Text", 16.0);
 
-            let overlay = Arc::new(Self {
-                hwnd: HWND::default(),
-                renderer: Arc::new(Mutex::new(UiRenderer::new(d2d_factory))),
-                renderable: Arc::new(Mutex::new(Container::empty())),
-                current_status: Arc::new(Mutex::new(ImeStatus::default())),
-                animation: Arc::new(Mutex::new(AnimationState::new())),
-                last_state: Arc::new(Mutex::new(LastWindowState::new())),
-                vsync_running: Arc::new(AtomicBool::new(false)),
-            });
+        let overlay = Arc::new(Self {
+            hwnd: HWND::default(),
+            renderer: Mutex::new(UiRenderer::new(d2d_factory)),
+            renderable: Mutex::new(Container::empty()),
+            current_status: Mutex::new(ImeStatus::default()),
+            animation: Mutex::new(AnimationState::new()),
+            last_state: Mutex::new(LastWindowState::new()),
+            vsync_running: Arc::new(AtomicBool::new(false)),
+        });
 
         let hwnd = match init_window(Some(Self::wnd_proc), Arc::as_ptr(&overlay), window_class, window_name) {
             Ok(hwnd) => hwnd,
@@ -93,34 +86,6 @@ impl OverlayWindow {
         };
 
         Ok(overlay)
-    }
-
-    pub fn setup_modern_look(hwnd: HWND) {
-        let margins = MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 };
-        unsafe {
-            let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
-        }
-
-        // Acrylic backdrop (Type 3)
-        set_dwm_attribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &3u32);
-
-        // Accent Policy (legacy Acrylic path)
-        accent::set_accent_policy(hwnd, 4); // ACCENT_ENABLE_ACRYLICBLURBEHIND
-
-        // Rounded corners (Win11)
-        set_dwm_attribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &DWMWCP_ROUND);
-
-        // Dark mode
-        set_dwm_attribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &BOOL(1));
-
-        // // Force backdrop active when unfocused (undocumented 1029)
-        // set_dwm_attribute(hwnd, unsafe { core::mem::transmute(1029i32) }, &BOOL(1));
-        //
-        // // Passive Update Mode (undocumented 1032)
-        // set_dwm_attribute(hwnd, unsafe { core::mem::transmute(1032i32) }, &BOOL(1));
-
-        // Exclude from peek
-        set_dwm_attribute(hwnd, DWMWA_EXCLUDED_FROM_PEEK, &BOOL(1));
     }
 
     #[allow(dead_code)]
@@ -220,17 +185,7 @@ impl OverlayWindow {
             (elements.outer_width().ceil() as i32, elements.outer_height().ceil() as i32)
         };
 
-        let _ = unsafe {
-            SetWindowPos(
-                self.hwnd,
-                None,
-                0,
-                0,
-                total_width,
-                total_height,
-                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW,
-            )
-        };
+        set_window_size(self.hwnd, total_width, total_height)?;
         Ok(())
     }
 

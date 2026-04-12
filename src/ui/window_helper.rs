@@ -49,8 +49,26 @@ pub fn get_monitor_work_area(rect: &RECT) -> Result<RECT> {
     }
 }
 
+pub fn post_window_message(hwnd: HWND, msg: u32) -> Result<()> {
+    unsafe { PostMessageW(Some(hwnd), msg, WPARAM(0), LPARAM(0)) }
+}
+
 pub fn set_window_pos_topmost(hwnd: HWND, x: i32, y: i32) -> Result<()> {
-    unsafe { SetWindowPos(hwnd, Some(HWND_TOPMOST), x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE) }
+    unsafe { SetWindowPos(hwnd, Some(HWND_TOPMOST), x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW) }
+}
+
+pub fn set_window_size(hwnd: HWND, width: i32, height: i32) -> Result<()> {
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            width,
+            height,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW,
+        )
+    }
 }
 
 pub fn get_window_dpi_scale(hwnd: HWND) -> Result<f32> {
